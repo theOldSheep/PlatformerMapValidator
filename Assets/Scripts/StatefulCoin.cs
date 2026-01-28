@@ -1,6 +1,9 @@
+using System.Collections.Generic;
+using UnityEngine;
+
 public class StatefulCoin : MonoBehaviour, IStateComponent
 {
-    public int ID { get; set; } // Set this in Inspector or via a Manager
+    // No ID property needed anymore
     private bool _isCollected = false;
 
     public List<StateFeature> GetFeatures() => new List<StateFeature> {

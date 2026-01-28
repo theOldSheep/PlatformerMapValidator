@@ -1,3 +1,5 @@
+using System.Linq;
+
 public struct GameStateSnapshot
 {
     public readonly int[] Data;
@@ -28,5 +30,15 @@ public struct GameStateSnapshot
             if (Data[i] != other.Data[i]) return false;
         }
         return true;
+    }
+
+    public override string ToString()
+    {
+        if (Data == null || Data.Length == 0) return "Empty Snapshot";
+        
+        // Return a preview (e.g., "[10, 45, 12...]") to avoid massive strings in logs
+        var preview = string.Join(", ", Data.Take(5));
+        var suffix = Data.Length > 5 ? "..." : "";
+        return $"Snapshot Hash: {_cachedHash:X} | Data: [{preview}{suffix}]";
     }
 }
