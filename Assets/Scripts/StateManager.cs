@@ -29,19 +29,13 @@ public class StateManager : MonoBehaviour
         {
             int typeId = StateTypeRegistry.GetTypeId(provider);
             List<int> intFeatures = new List<int>();
+            
+            List<IStateFeature> stateFeatures = (List<IStateFeature>)provider.GetType().GetMethod("GetFeatures").Invoke(null, null);
+            List<object> stateFeatureRawValues = provider.GetFeaturesRawValue();
 
-            foreach (var feature in provider.GetFeatures())
+            for (int i = 0; i < stateFeatures.Count; i ++)
             {
-                if (feature.Type == FeatureType.Discrete)
-                {
-                    intFeatures.Add(Mathf.RoundToInt(feature.Value));
-                }
-                else
-                {
-                    // Continuous binning
-                    int binned = Mathf.FloorToInt(feature.Value / feature.Granularity);
-                    intFeatures.Add(binned);
-                }
+                intFeatures.Add(stateFeatures[i].Encode(stateFeatureRawValues[i]));
             }
 
             capturedObjects.Add(new ObjectStateData 
@@ -87,6 +81,8 @@ public class StateManager : MonoBehaviour
         // For debug visualization
         var snapshot = CaptureState();
         string debugStr = string.Join(",", snapshot.Data);
-        // Debug.Log($"State: [{debugStr}]"); 
+        string debugPlyFeatStr = string.Join(",", snapshot.GetPlayerFeatures());
+        Debug.Log($"State: [{debugStr}]"); 
+        Debug.Log($"Ply: [{debugPlyFeatStr}]"); 
     }
 }

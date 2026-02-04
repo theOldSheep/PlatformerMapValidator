@@ -7,13 +7,15 @@ using UnityEngine;
 public static class StateTypeRegistry
 {
     private static Dictionary<Type, int> _typeIds;
+    private static Dictionary<int, Type> _idTypes;
 
     // Call this manually at startup, or lazy load it
     public static void Initialize()
     {
-        if (_typeIds != null) return;
+        if (_typeIds != null && _idTypes != null) return;
 
         _typeIds = new Dictionary<Type, int>();
+        _idTypes = new Dictionary<int, Type>();
 
         // 1. Find all types in the assembly that implement IStateComponent
         var componentTypes = Assembly.GetAssembly(typeof(IStateComponent))
@@ -26,6 +28,7 @@ public static class StateTypeRegistry
         for (int i = 0; i < componentTypes.Count; i++)
         {
             _typeIds[componentTypes[i]] = i + 1;
+            _idTypes[i + 1] = componentTypes[i];
             Debug.Log($"State Registry: Assigned ID {i + 1} to {componentTypes[i].Name}");
         }
     }
@@ -39,5 +42,15 @@ public static class StateTypeRegistry
         
         Debug.LogWarning($"Type {t.Name} not registered.");
         return 0;
+    }
+
+    public static Type GetTypeById(int id)
+    {
+        if (_idTypes == null) Initialize();
+        
+        if (_idTypes.TryGetValue(id, out Type type)) return type;
+        
+        Debug.LogWarning($"Type with ID {id} not registered.");
+        return null;
     }
 }

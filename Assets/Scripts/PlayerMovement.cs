@@ -1,13 +1,38 @@
 
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 
-public class PlayerMovement : MonoBehaviour, IMovement
+public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
 {
 
+    [Header("State Repr Settings")]
+    public static float posClampX = 25f;
+    public static float posClampY = 25f;
+    public static float posStepX = 0.2f;
+    public static float posStepY = 0.2f;
+    private static List<IStateFeature> _cachedGameStateFeatures = new List<IStateFeature> {
+        new StateFeature<float> {
+            Type = FeatureType.Continuous,
+            Granularity=posStepX
+        },
+        new StateFeature<float> {
+            Type = FeatureType.Continuous,
+            Granularity=posStepY 
+        },
+        new StateFeature<float> {
+            Type = FeatureType.Continuous,
+            Granularity=posStepX
+        },
+        new StateFeature<float> {
+            Type = FeatureType.Continuous,
+            Granularity=posStepY
+        },
+    };
 
     public enum MoveActionType { None, Left, Right, Jump } //here need to add also the new mechanic....
     private readonly List<MoveAction> candidateActions = new List<MoveAction>(8);
@@ -263,10 +288,12 @@ public class PlayerMovement : MonoBehaviour, IMovement
         Gizmos.DrawLine(origin, origin + Vector2.down * groundCheckDistance);
     }
 
-
-
-
-
-
+    public static List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;
+    public List<object> GetFeaturesRawValue() => new List<object> {
+        Math.Clamp(transform.position.x, -posClampX, posClampX),
+        Math.Clamp(transform.position.y, -posClampY, posClampY),
+        rb.velocity.x,
+        rb.velocity.y,
+    };
 }
 
