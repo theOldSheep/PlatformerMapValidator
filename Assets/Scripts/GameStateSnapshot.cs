@@ -2,20 +2,33 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+public struct FeatureSnapshot
+{
+    public object Raw;
+    public int Encoded;
+
+    public FeatureSnapshot(object raw, int encoded)
+    {
+        Raw = raw;
+        Encoded = encoded;
+    }
+}
+
 public struct GameStateSnapshot
 {
-    public readonly int[] Data;
+    // Now stores the dual-representation
+    public readonly FeatureSnapshot[] Data;
     private readonly int _cachedHash;
 
-    public GameStateSnapshot(int[] data)
+    public GameStateSnapshot(FeatureSnapshot[] data)
     {
         Data = data;
         
-        // Rolling Hash (DJB2 or similar logic) to combine array elements
+        // Hash based on Encoded values only for state comparison consistency
         int hash = 17;
-        foreach (int val in Data)
+        foreach (var val in Data)
         {
-            unchecked { hash = hash * 31 + val; }
+            unchecked { hash = hash * 31 + val.Encoded; }
         }
         _cachedHash = hash;
     }
@@ -29,49 +42,36 @@ public struct GameStateSnapshot
         
         for (int i = 0; i < Data.Length; i++)
         {
-            if (Data[i] != other.Data[i]) return false;
+            // Equality is usually determined by the encoded state
+            if (Data[i].Encoded != other.Data[i].Encoded) return false;
         }
         return true;
     }
 
-    public override string ToString()
-    {
-        if (Data == null || Data.Length == 0) return "Empty Snapshot";
-        
-        // Return a preview (e.g., "[10, 45, 12...]") to avoid massive strings in logs
-        var preview = string.Join(", ", Data.Take(5));
-        var suffix = Data.Length > 5 ? "..." : "";
-        return $"Snapshot Hash: {_cachedHash:X} | Data: [{preview}{suffix}]";
-    }
-    
     public List<object> GetPlayerFeatures()
     {
         var result = new List<object>();
-
-        for (int i = 0; i < Data.Length; i++)
+        int i = 0;
+        while (i < Data.Length)
         {
-            Type valueType = StateTypeRegistry.GetTypeById(Data[i]);
-            // TODO - maybe get this right, or just leave this validation for robustness...
-            // if (! typeof(IStateFeature).IsAssignableFrom(valueType)) continue;
-
-            List<IStateFeature> features = (List<IStateFeature>)valueType.GetMethod("GetFeatures").Invoke(null, null);
-            // Decode the player element
+            // The TypeID is stored in the 'Encoded' field of the header entry
+            int typeId = Data[i].Encoded;
+            Type valueType = StateTypeRegistry.GetTypeById(typeId);
+            
+            var features = (List<IStateFeature>)valueType.GetMethod("GetFeatures").Invoke(null, null);
+            
             if (valueType == typeof(PlayerMovement))
             {
-                for (int j = 0; j < features.Count; j ++)
+                for (int j = 0; j < features.Count; j++)
                 {
-                    result.Add( features[j].Decode(Data[i + j + 1]) );
+                    // Return the original Raw values
+                    result.Add(Data[i + j + 1].Raw);
                 }
                 return result;
             }
-            // Skip the current element
-            else
-            {
-                i += features.Count;
-            }
-
+            
+            i += 1 + features.Count; // Move to next object header
         }
-
         return result;
     }
 }

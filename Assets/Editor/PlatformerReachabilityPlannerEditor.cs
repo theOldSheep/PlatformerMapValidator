@@ -36,11 +36,11 @@ public class PlatformerReachabilityPlannerEditor : Editor
                 SceneView.RepaintAll();
             }
 
-            if (GUILayout.Button("Run Dijkstra"))
-            {
-                planner.RunDijkstra();
-                SceneView.RepaintAll();
-            }
+            // if (GUILayout.Button("Run Dijkstra"))
+            // {
+            //     planner.RunDijkstra();
+            //     SceneView.RepaintAll();
+            // }
         }
     }
 }

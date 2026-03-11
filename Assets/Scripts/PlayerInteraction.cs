@@ -18,11 +18,9 @@ public class PlayerInteraction : MonoBehaviour
     void CollectCoin(GameObject coin)
     {
         coinsCollected++;
-        Debug.Log("Coins: " + coinsCollected);
+        // Debug.Log("Coins: " + coinsCollected);
 
-        // Destroy the coin so it disappears
-        Destroy(coin);
-        
-        // Optional: Trigger a sound effect or particle here later!
+        // Hide the coin
+        coin.GetComponent<StatefulCoin>().Collect();
     }
 }

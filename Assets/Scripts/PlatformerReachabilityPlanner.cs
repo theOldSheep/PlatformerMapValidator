@@ -1,434 +1,239 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
+using System.Linq;
 using UnityEngine;
+using UnityEngine.Scripting.APIUpdating;
 
 public class PlatformerReachabilityPlanner : MonoBehaviour
 {
     [SerializeField] private PlayerMovement player;
+    [SerializeField] private StateManager stateManager; // Link to the new StateManager
     [SerializeField] private Transform goal;
 
+    [Header("Search Settings")]
+    [SerializeField] private int MaxExpansions = 5000;
     private const float StepDt = 0.02f;
-    private const int StepsPerAction = 6;
-    [SerializeField] private int MaxExpansions = 20000;
-    private const float GoalRadius = 0.35f;
+    private const int StepsPerAction = 5;
+    private const float GoalRadius = 0.5f;
 
-    private const float PosQuant = 0.10f;
-    private const float VelQuant = 0.50f;
+    // Use GameStateSnapshot as the key for the visited set
+    private readonly HashSet<GameStateSnapshot> visitedStates = new HashSet<GameStateSnapshot>();
+    private readonly List<Vector3> lastPathPoints = new List<Vector3>();
 
-    private readonly List<Vector2> explored = new List<Vector2>(50000);
-    private readonly List<Vector2> lastPath = new List<Vector2>(512);
-
-    [ContextMenu("Run A* (Reach Goal)")]
-    public void RunAStar() => RunInternal(heuristicWeight: 1f);
-
-    [ContextMenu("Run Dijkstra (Reachability Map)")]
-    public void RunDijkstra() => RunInternal(heuristicWeight: 0f);
-
-    private void RunInternal(float heuristicWeight)
+    public class SearchNode : IComparable<SearchNode>
     {
-        if (player == null || goal == null)
+        public GameStateSnapshot State;
+        public Vector2 Position;
+        public float G;
+        public float H;
+        public SearchNode Parent; // No longer causes a cycle
+        public PlayerMovement.MoveAction ActionTaken;
+
+        public float F => G + H;
+
+        // A* typically picks the lowest F score
+        public int CompareTo(SearchNode other)
         {
-            Debug.LogError("Assign PlayerMovement and Goal Transform.");
+            // Min-heap: We want the smallest F at the top
+            int result = F.CompareTo(other.F);
+            if (result == 0) 
+            {
+                // Tie-breaker: Prefer nodes closer to the goal (lower H) 
+                // or further from start (higher G) to find path faster
+                return H.CompareTo(other.H); 
+            }
+            return result;
+        }
+    }
+
+    [ContextMenu("Run State-Based A*")]
+    public void RunAStar()
+    {
+        if (player == null || stateManager == null || goal == null) {
             return;
         }
 
-        explored.Clear();
-        lastPath.Clear();
+        visitedStates.Clear();
+        lastPathPoints.Clear();
 
-        PlayerMovement ghost;
-        var saved = new PhysicsIsolationScope(player, out ghost);
+        // 1. Capture the initial world state
+        GameStateSnapshot startState = stateManager.CaptureState();
+        Vector2 startPos = player.transform.position;
+        Vector2 goalPos = goal.position;
+        // Capture current world state and physics mode
+        GameStateSnapshot initialWorldState = stateManager.CaptureState();
+        SimulationMode2D previousMode = Physics2D.simulationMode;
+        Physics2D.simulationMode = SimulationMode2D.Script;
 
-        try
-        {
-            if (ghost == null)
+        try {
+            var openList = new PriorityQueue<SearchNode>();
+            
+            SearchNode root = new SearchNode {
+                State = startState,
+                Position = startPos,
+                G = 0,
+                H = Vector2.Distance(startPos, goalPos)
+            };
+
+            openList.Push(root);
+            int expansions = 0;
+
+            while (openList.Count > 0 && expansions < MaxExpansions)
             {
-                Debug.LogError("Failed to create ghost.");
-                return;
-            }
+                SearchNode current = openList.Pop();
 
-            var startSnap = player.CaptureSnapshot();
-            ghost.RestoreSnapshot(startSnap);
+                // Check if we already visited this specific encoded state
+                if (visitedStates.Contains(current.State)) continue;
+                visitedStates.Add(current.State);
+                expansions++;
 
-            bool reachable = Search(ghost, goal.position, heuristicWeight, lastPath);
-
-            Debug.Log(reachable
-                ? $"[Planner] Goal reachable: YES. Path points: {lastPath.Count}, explored: {explored.Count}"
-                : $"[Planner] Goal reachable: NO. Explored: {explored.Count}");
-        }
-        finally
-        {
-            saved.Dispose();
-        }
-    }
-
-    private bool Search(PlayerMovement ghost, Vector2 goalPos, float heuristicWeight, List<Vector2> path)
-    {
-        path.Clear();
-
-        var open = new MinHeap(); //frontier
-        var closed = new HashSet<Key>();
-        var records = new Dictionary<Key, Record>(8192);
-
-        var startSnap = ghost.CaptureSnapshot();
-        var startKey = new Key(startSnap);
-
-        records[startKey] = new Record { snapshot = startSnap, g = 0f, hasParent = false };
-        open.Push(Heuristic(startSnap.position, goalPos, ghost) * heuristicWeight, startKey);
-
-        int expansions = 0;
-
-        while (open.Count > 0 && expansions < MaxExpansions)
-        {
-            var popped = open.Pop();
-            var curKey = popped.key;
-
-            if (closed.Contains(curKey)) continue;
-
-            var curRec = records[curKey];
-            var curSnap = curRec.snapshot;
-
-            closed.Add(curKey);
-            explored.Add(curSnap.position);
-
-            if (Vector2.Distance(curSnap.position, goalPos) <= GoalRadius)
-            {
-                Reconstruct(records, curKey, path);
-                return true;
-            }
-
-            expansions++;
-
-            ghost.RestoreSnapshot(curSnap);
-            var actions = ghost.GetCandidateActions();
-
-            for (int i = 0; i < actions.Count; i++)
-            {
-                var nextSnap = SimulateAction(ghost, curSnap, actions[i]);
-                var nextKey = new Key(nextSnap);
-
-                if (closed.Contains(nextKey)) continue;
-
-                float stepCost = StepDt * StepsPerAction;
-                float tentativeG = curRec.g + stepCost;
-
-                Record nextRec;
-                if (!records.TryGetValue(nextKey, out nextRec) || tentativeG < nextRec.g)
+                // Check Goal
+                if (Vector2.Distance(current.Position, goalPos) < GoalRadius)
                 {
-                    nextRec.snapshot = nextSnap;
-                    nextRec.g = tentativeG;
-                    nextRec.parent = curKey;
-                    nextRec.hasParent = true;
-                    records[nextKey] = nextRec;
+                    Debug.Log($"Goal Found! Expansions: {expansions}");
+                    GeneratePath(current);
+                    return;
+                }
 
-                    float f = tentativeG + Heuristic(nextSnap.position, goalPos, ghost) * heuristicWeight;
-                    open.Push(f, nextKey);
+                // 2. Restore the entire world to the current node's state
+                // This resets coins, platforms, and player variables
+                stateManager.RestoreState(current.State);
+
+                // 3. Explore using the generic Action Abstraction
+                var availableActions = player.GetCandidateActions();
+
+                foreach (var action in availableActions)
+                {
+                    // Always restore back to 'current' before trying a different branch
+                    stateManager.RestoreState(current.State);
+
+                    // 4. Simulate the action
+                    player.ApplyAction(action);
+                    
+                    // Advance physics for a few steps to see the result of the action
+                    for (int i = 0; i < StepsPerAction; i++)
+                    {
+                        // 1. Ensure Raycasts/Collisions are in sync with current positions
+                        Physics2D.SyncTransforms(); 
+                        
+                        // 2. Call the logic that updates velocities based on input/state
+                        player.SimulateStep(StepDt); 
+                        
+                        // 3. Move the physical bodies
+                        Physics2D.Simulate(StepDt);
+                    }
+
+                    // 5. Capture the resulting state
+                    GameStateSnapshot nextState = stateManager.CaptureState();
+                    Vector2 nextPos = player.transform.position;
+
+                    if (!visitedStates.Contains(nextState))
+                    {
+                        float cost = Vector2.Distance(current.Position, nextPos);
+                        openList.Push(new SearchNode {
+                            State = nextState,
+                            Position = nextPos,
+                            G = current.G + cost,
+                            H = Vector2.Distance(nextPos, goalPos),
+                            Parent = current,
+                            ActionTaken = action
+                        });
+                    }
                 }
             }
+            
+            Debug.LogWarning("Goal not reached within MaxExpansions.");
         }
-
-        return false;
-    }
-
-    private PlayerMovement.MovementSnapshot SimulateAction(
-        PlayerMovement ghost,
-        PlayerMovement.MovementSnapshot from,
-        PlayerMovement.MoveAction action)
-    {
-        ghost.RestoreSnapshot(from);
-        ghost.ApplyAction(action);
-
-        for (int i = 0; i < StepsPerAction; i++)
+        finally 
         {
-            ghost.SimulateStep(StepDt);
-            Physics2D.Simulate(StepDt);
+            // RESTORE: This block runs even if the search crashes
+            // 1. Put the player/coins back to where they were before the button was clicked
+            stateManager.RestoreState(initialWorldState);
+            
+            // 2. Give control back to Unity's automatic physics
+            Physics2D.simulationMode = previousMode;
+
+            // player.ApplyAction(new PlayerMovement.MoveAction(PlayerMovement.MoveActionType.None));
         }
-
-        return ghost.CaptureSnapshot();
     }
 
-    private static float Heuristic(Vector2 pos, Vector2 goalPos, PlayerMovement ghost)
+    private void GeneratePath(SearchNode endNode)
     {
-        float dx = Mathf.Abs(goalPos.x - pos.x);
-        float speed = Mathf.Max(0.01f, ghost.moveSpeed);
-        return dx / speed;
-    }
-
-    private static void Reconstruct(Dictionary<Key, Record> records, Key goalKey, List<Vector2> path)
-    {
-        path.Clear();
-        var k = goalKey;
-
-        int safety = 0;
-        while (records.TryGetValue(k, out var rec))
+        lastPathPoints.Clear();
+        SearchNode temp = endNode;
+        while (temp.Parent != null)
         {
-            path.Add(rec.snapshot.position);
-            if (!rec.hasParent) break;
-
-            k = rec.parent;
-            if (++safety > 200000) break;
+            lastPathPoints.Add(temp.Position);
+            temp = temp.Parent;
         }
-
-        path.Reverse();
+        lastPathPoints.Reverse();
     }
 
-    // -------------------------- Keying / Records --------------------------
-
-    private struct Key : IEquatable<Key>
+    private void OnDrawGizmos()
     {
-        private readonly int qx, qy, qvx, qvy, qg;
-
-        public Key(PlayerMovement.MovementSnapshot s)
+        if (lastPathPoints.Count < 2) return;
+        Gizmos.color = Color.green;
+        for (int i = 0; i < lastPathPoints.Count - 1; i++)
         {
-            qx = Quant(s.position.x, PosQuant);
-            qy = Quant(s.position.y, PosQuant);
-            qvx = Quant(s.velocity.x, VelQuant);
-            qvy = Quant(s.velocity.y, VelQuant);
-            qg = s.isGrounded ? 1 : 0;
-        }
-
-        private static int Quant(float v, float q) => Mathf.RoundToInt(v / q);
-
-        public bool Equals(Key other) =>
-            qx == other.qx && qy == other.qy && qvx == other.qvx && qvy == other.qvy && qg == other.qg;
-
-        public override bool Equals(object obj) => obj is Key other && Equals(other);
-
-        public override int GetHashCode()
-        {
-            unchecked
-            {
-                int h = qx;
-                h = (h * 397) ^ qy;
-                h = (h * 397) ^ qvx;
-                h = (h * 397) ^ qvy;
-                h = (h * 397) ^ qg;
-                return h;
-            }
+            Gizmos.DrawLine(lastPathPoints[i], lastPathPoints[i+1]);
         }
     }
-
-    private struct Record
+    
+    public class PriorityQueue<T> where T : IComparable<T>
     {
-        public PlayerMovement.MovementSnapshot snapshot;
-        public float g;
-        public Key parent;
-        public bool hasParent;
-    }
+        private List<T> heap = new List<T>();
 
-    private sealed class MinHeap
-    {
-        private readonly List<(float pri, Key key)> heap = new List<(float, Key)>(4096);
         public int Count => heap.Count;
 
-        public void Push(float pri, Key key)
+        public void Push(T item)
         {
-            heap.Add((pri, key));
-            SiftUp(heap.Count - 1);
-        }
-
-        public (float pri, Key key) Pop()
-        {
-            var root = heap[0];
-            int last = heap.Count - 1;
-            heap[0] = heap[last];
-            heap.RemoveAt(last);
-            if (heap.Count > 0) SiftDown(0);
-            return root;
-        }
-
-        private void SiftUp(int i)
-        {
+            heap.Add(item);
+            int i = heap.Count - 1;
+            // Bubble Up
             while (i > 0)
             {
-                int p = (i - 1) / 2;
-                if (heap[p].pri <= heap[i].pri) break;
-                (heap[p], heap[i]) = (heap[i], heap[p]);
-                i = p;
+                int parent = (i - 1) / 2;
+                if (heap[i].CompareTo(heap[parent]) >= 0) break;
+                
+                T temp = heap[i];
+                heap[i] = heap[parent];
+                heap[parent] = temp;
+                i = parent;
             }
         }
 
-        private void SiftDown(int i)
+        public T Pop()
         {
-            int n = heap.Count;
+            if (heap.Count == 0) return default;
+
+            T result = heap[0];
+            int lastIndex = heap.Count - 1;
+            heap[0] = heap[lastIndex];
+            heap.RemoveAt(lastIndex);
+
+            lastIndex--;
+            int i = 0;
+            // Bubble Down
             while (true)
             {
-                int l = 2 * i + 1, r = l + 1, s = i;
-                if (l < n && heap[l].pri < heap[s].pri) s = l;
-                if (r < n && heap[r].pri < heap[s].pri) s = r;
-                if (s == i) break;
-                (heap[s], heap[i]) = (heap[i], heap[s]);
-                i = s;
-            }
-        }
-    }
+                int left = i * 2 + 1;
+                int right = i * 2 + 2;
+                int smallest = i;
 
-    // -------------------------- Physics isolation (ghost + manual sim) --------------------------
+                if (left <= lastIndex && heap[left].CompareTo(heap[smallest]) < 0)
+                    smallest = left;
+                if (right <= lastIndex && heap[right].CompareTo(heap[smallest]) < 0)
+                    smallest = right;
 
-    private sealed class PhysicsIsolationScope : IDisposable
-    {
-        private readonly Rigidbody2D liveRb;
-        private readonly bool liveRbSimulated;
+                if (smallest == i) break;
 
-        private readonly List<Rigidbody2D> otherBodies = new List<Rigidbody2D>(256);
-        private readonly List<bool> otherSimStates = new List<bool>(256);
-
-        private readonly object savedSimulationMode;
-        private readonly object savedAutoSimulation;
-        private readonly bool usedSimulationModeProperty;
-
-        private readonly GameObject ghostGO;
-
-        public PhysicsIsolationScope(PlayerMovement live, out PlayerMovement ghost)
-        {
-            ghost = null;
-
-            liveRb = live != null ? live.GetComponent<Rigidbody2D>() : null;
-            if (liveRb != null)
-            {
-                liveRbSimulated = liveRb.simulated;
-                liveRb.simulated = false;
-            }
-            else
-            {
-                liveRbSimulated = false;
+                T temp = heap[i];
+                heap[i] = heap[smallest];
+                heap[smallest] = temp;
+                i = smallest;
             }
 
-            Rigidbody2D[] allBodies;
-
-#if UNITY_2023_1_OR_NEWER || UNITY_2022_2_OR_NEWER
-            allBodies = UnityEngine.Object.FindObjectsByType<Rigidbody2D>(FindObjectsSortMode.None);
-#else
-            allBodies = UnityEngine.Object.FindObjectsOfType<Rigidbody2D>();
-#endif
-
-            foreach (var b in allBodies)
-            {
-                if (b == null) continue;
-                if (liveRb != null && b == liveRb) continue;
-
-                otherBodies.Add(b);
-                otherSimStates.Add(b.simulated);
-                b.simulated = false;
-            }
-
-            (usedSimulationModeProperty, savedSimulationMode, savedAutoSimulation) = SetPhysics2DToManual();
-
-            ghostGO = UnityEngine.Object.Instantiate(live.gameObject);
-            ghostGO.name = live.gameObject.name + "_PLANNER_GHOST";
-
-            foreach (var r in ghostGO.GetComponentsInChildren<Renderer>(true))
-                r.enabled = false;
-
-            foreach (var mb in ghostGO.GetComponentsInChildren<MonoBehaviour>(true))
-            {
-                if (mb is PlayerMovement) continue;
-                mb.enabled = false;
-            }
-
-            ghost = ghostGO.GetComponent<PlayerMovement>();
-            if (ghost == null) return;
-
-
-            ghost.SetUseUnityInput(false);
-            EnsurePrivateRbFieldInitialized(ghost);
-
-            var grb = ghost.GetComponent<Rigidbody2D>();
-            if (grb != null) grb.simulated = true;
-        }
-
-        public void Dispose()
-        {
-            if (ghostGO != null)
-            {
-                if (Application.isPlaying) UnityEngine.Object.Destroy(ghostGO);
-                else UnityEngine.Object.DestroyImmediate(ghostGO);
-            }
-
-            RestorePhysics2D(usedSimulationModeProperty, savedSimulationMode, savedAutoSimulation);
-
-            for (int i = 0; i < otherBodies.Count; i++)
-                if (otherBodies[i] != null)
-                    otherBodies[i].simulated = otherSimStates[i];
-
-            if (liveRb != null)
-                liveRb.simulated = liveRbSimulated;
-        }
-
-        private static void EnsurePrivateRbFieldInitialized(PlayerMovement pm)
-        {
-            var t = pm.GetType();
-            var f = t.GetField("rb", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (f == null || f.FieldType != typeof(Rigidbody2D)) return;
-
-            var current = f.GetValue(pm) as Rigidbody2D;
-            if (current != null) return;
-
-            var rb = pm.GetComponent<Rigidbody2D>();
-            if (rb != null) f.SetValue(pm, rb);
-        }
-
-        private static (bool usedSimulationModeProperty, object savedSimulationMode, object savedAutoSimulation) SetPhysics2DToManual()
-        {
-            var physics2DType = typeof(Physics2D);
-
-            var simModeProp = physics2DType.GetProperty("simulationMode", BindingFlags.Public | BindingFlags.Static);
-            if (simModeProp != null)
-            {
-                object saved = simModeProp.GetValue(null);
-                object scriptValue = Enum.Parse(simModeProp.PropertyType, "Script");
-                simModeProp.SetValue(null, scriptValue);
-                return (true, saved, null);
-            }
-
-            var autoSimProp = physics2DType.GetProperty("autoSimulation", BindingFlags.Public | BindingFlags.Static);
-            if (autoSimProp != null)
-            {
-                object saved = autoSimProp.GetValue(null);
-                autoSimProp.SetValue(null, false);
-                return (false, null, saved);
-            }
-
-            return (false, null, null);
-        }
-
-        private static void RestorePhysics2D(bool usedSimulationModeProperty, object savedSimulationMode, object savedAutoSimulation)
-        {
-            var physics2DType = typeof(Physics2D);
-
-            if (usedSimulationModeProperty)
-            {
-                var simModeProp = physics2DType.GetProperty("simulationMode", BindingFlags.Public | BindingFlags.Static);
-                if (simModeProp != null && savedSimulationMode != null)
-                    simModeProp.SetValue(null, savedSimulationMode);
-                return;
-            }
-
-            var autoSimProp = physics2DType.GetProperty("autoSimulation", BindingFlags.Public | BindingFlags.Static);
-            if (autoSimProp != null && savedAutoSimulation != null)
-                autoSimProp.SetValue(null, savedAutoSimulation);
-        }
-    }
-
-    // -------------------------- Gizmos --------------------------
-
-    private void OnDrawGizmosSelected()
-    {
-        Gizmos.color = new Color(1f, 1f, 0f, 0.35f);
-        for (int i = 0; i < explored.Count; i += 25)
-            Gizmos.DrawSphere(explored[i], 0.05f);
-
-        if (lastPath.Count > 1)
-        {
-            Gizmos.color = new Color(0f, 1f, 0f, 0.9f);
-            for (int i = 0; i < lastPath.Count - 1; i++)
-                Gizmos.DrawLine(lastPath[i], lastPath[i + 1]);
-        }
-
-        if (goal != null)
-        {
-            Gizmos.color = new Color(1f, 0f, 0f, 0.6f);
-            Gizmos.DrawWireSphere(goal.position, GoalRadius);
+            return result;
         }
     }
 }

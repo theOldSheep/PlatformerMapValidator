@@ -4,6 +4,9 @@ using UnityEngine;
 
 public class A_Star : MonoBehaviour
 {
+    [SerializeField] private StateManager stateManager;
+    private IMovement playerMovement;
+    private PlayerMovement playerComponent; // For action access
 
     //public variables
     [Header("Start and Goal Positions")]
@@ -47,28 +50,17 @@ public class A_Star : MonoBehaviour
     // Start is called before the first frame update
     void Start()
     {
-        // //make sure user gave A* an object that has the movement functions
-        // if (playerObject == null)
-        // {
-        //     Debug.Log("Remember to give the A_star script a player object");
-        // }
+        playerMovement = playerObject.GetComponent<IMovement>();
+        playerComponent = playerObject.GetComponent<PlayerMovement>();
+        
+        startPosition = startPos.transform.position;
+        goalPosition = goalPos.transform.position;
 
-        startPosition = (Vector2)startPos.transform.position;
-        goalPosition = (Vector2)goalPos.transform.position;
-
-        //add start node to final path list
-        A_StarNode startNode = ScriptableObject.CreateInstance<A_StarNode>();
-        startNode.nodeSetup(startPosition, 0f, Vector2.Distance(startPosition, goalPosition));
-        closedList.Add(startNode);
-
-        //A* starts at provided start node
-        transform.position = startPosition;
-        currentNode = startNode;
-
-        //set up distances to check
-        checkDistanceJump = halfHeight + jumpForce; ///
-        checkDistanceFall = halfHeight + gravityForce; ///
-        checkDistanceX = halfWidth + moveSpeed; ///
+        // Initialize search with current state
+        GameStateSnapshot startState = stateManager.CaptureState();
+        currentNode = ScriptableObject.CreateInstance<A_StarNode>();
+        currentNode.nodeSetup(startState, startPosition, 0, Vector2.Distance(startPosition, goalPosition));
+        nodeList.Add(currentNode);
     }
 
     //helper function to print arraylists
@@ -109,117 +101,120 @@ public class A_Star : MonoBehaviour
     *////
 
     // Update is called once per frame
+    
     void Update()
     {
-        //increment update number
-        ++updateNumber; ///TODO: decide if we want this for g(n)
+        if (Vector2.Distance(playerObject.transform.position, goalPosition) < 1f) return;
 
-        //do nothing this frame if we reached the goal
-        if (Vector2.Distance(currentNode.getPosition(), goalPosition) <= moveSpeed)
+        // 1. Reset world to the state we want to explore from
+        stateManager.RestoreState(currentNode.State);
+
+        // 2. Ask the character for available actions (Generalization)
+        var actions = playerComponent.GetCandidateActions();
+
+        foreach (var action in actions)
         {
-            Debug.Log("reached goal!");
-            return;
-        }
+            // Revert state for every "branch" attempt
+            stateManager.RestoreState(currentNode.State);
 
-        ///TODO: decide on failure condition and choose a response
+            // 3. Apply the generic action
+            playerComponent.ApplyAction(action);
+            
+            // 4. Simulate physics forward by one step (dt)
+            playerComponent.SimulateStep(Time.fixedDeltaTime);
 
-        ///Debug.Log("STARTING UPDATE " + updateNumber);
-        ///printNodeList();
+            // 5. Record the result
+            GameStateSnapshot nextState = stateManager.CaptureState();
+            Vector2 nextPos = playerObject.transform.position;
 
-        ///TODO: expand to diagonal directions while in the air?
-        ///TODO: next position for the new node determined by provided jumpforce and move speed
-        ///     or by jump and move functions??
-
-        //raycast in each neighbour direction to see if there's an obstacle
-        //RAYCAST LEFT
-        Vector2 origin = (Vector2)transform.position + rayOffset;
-        RaycastHit2D hitLeft = Physics2D.Raycast(origin, Vector2.left, checkDistanceX, obstacleLayer);
-        //valid direction when there's no obstacle
-        if (!hitLeft.collider)
-        {
-            //calculate position and values
-            Vector2 newPosLeft = (Vector2)transform.position + (Vector2.left * moveSpeed);
-            A_StarNode newNode = createNewNode(newPosLeft, currentNode);
-            //add node to open list and update current smallest node
+            A_StarNode newNode = createNewNode(nextState, nextPos, currentNode);
             if (nodeNotClosed(newNode))
             {
-                currentNode = addNodeAndGetSmallest(newNode);
-            }
-            ///printNodeList();
-        }
-
-        //RAYCAST RIGHT
-        RaycastHit2D hitRight = Physics2D.Raycast(origin, Vector2.right, checkDistanceX, obstacleLayer);
-        //valid direction when there's no obstacle
-        if (!hitRight.collider)
-        {
-            //calculate position and values
-            Vector2 newPosRight = (Vector2)transform.position + (Vector2.right * moveSpeed);
-            A_StarNode newNode = createNewNode(newPosRight, currentNode);
-            //add node to open list and update current smallest node
-            if (nodeNotClosed(newNode))
-            {
-                currentNode = addNodeAndGetSmallest(newNode);
-            }
-            ///printNodeList();
-        }
-
-        //RAYCAST UP AND DOWN 
-        RaycastHit2D hitUp = Physics2D.Raycast(origin, Vector2.up, checkDistanceJump, obstacleLayer);
-        RaycastHit2D hitDown = Physics2D.Raycast(origin, Vector2.down, checkDistanceFall, obstacleLayer);
-        //valid direction when there's obstacle below and no obstacle above
-        if (!hitUp.collider && hitDown.collider)
-        {
-            //calculate position and values
-            Vector2 newPosJump = (Vector2)transform.position + (Vector2.up * jumpForce);
-            A_StarNode newNode = createNewNode(newPosJump, currentNode);
-            //add node to open list and update current smallest node
-            if (nodeNotClosed(newNode))
-            {
-                currentNode = addNodeAndGetSmallest(newNode);
-            }
-            ///printNodeList();
-        }
-
-        if (!hitDown.collider)
-        {
-            //player can fall
-            //calculate position and values
-            Vector2 newPosFall = (Vector2)transform.position + (Vector2.down * gravityForce);
-            A_StarNode newNode = createNewNode(newPosFall, currentNode);
-            //add node to open list and update current smallest node
-            if (nodeNotClosed(newNode))
-            {
-                currentNode = addNodeAndGetSmallest(newNode);
+                addNodeAndGetSmallest(newNode);
             }
         }
 
-        ///Debug.Log("finished adding new nodes: ");
-        ///Debug.Log("added nodes in directions: left = " + !hitLeft.collider + ", right = " + (hitRight.collider==null) + ", jump = " + (hitDown.collider && !hitUp.collider) + ", fall = " + !hitDown.collider);
-        ///printNodeList();
-
-        //current node is already set to smallest node
-        transform.position = currentNode.getPosition();
-        //update the arrays 
+        // 6. Move to the best state found
+        currentNode = GetSmallestFromOpenList();
+        stateManager.RestoreState(currentNode.State);
         closeNode(currentNode);
-
-        ///Debug.Log("removed node with pos = " + currentNode.getPosition() + ", F = " + currentNode.getF());
-        ///Debug.Log("current position is " + transform.position);
-        ///Debug.Log("FINISHED UPDATE");
     }
 
 
-    //helper function to set up node
-    A_StarNode createNewNode(Vector2 newPos, A_StarNode currentNode)
+    // Helper to wrap node creation with the new Snapshot
+    A_StarNode createNewNode(GameStateSnapshot state, Vector2 pos, A_StarNode parent)
     {
-        ///float newG = updateNumber;
-        float newG = currentNode.getG() + Vector2.Distance(newPos, currentNode.getPosition());
-        float newH = Vector2.Distance(newPos, goalPosition);
-        //create a new node
+        float newG = parent.getG() + Vector2.Distance(pos, parent.getPosition());
+        float newH = Vector2.Distance(pos, goalPosition);
+        
         A_StarNode newNode = ScriptableObject.CreateInstance<A_StarNode>();
-        newNode.nodeSetup(newPos, newG, newH);
-
+        newNode.nodeSetup(state, pos, newG, newH);
         return newNode;
+    }
+
+    private bool IsValidMove(Vector2 direction)
+    {
+        Vector2 origin = (Vector2)transform.position + rayOffset;
+
+        if (direction == Vector2.left)
+        {
+            return !Physics2D.Raycast(origin, Vector2.left, checkDistanceX, obstacleLayer).collider;
+        }
+        if (direction == Vector2.right)
+        {
+            return !Physics2D.Raycast(origin, Vector2.right, checkDistanceX, obstacleLayer).collider;
+        }
+        if (direction == Vector2.up) // Jump Check
+        {
+            // Must have no obstacle above and be standing on something
+            bool hitUp = Physics2D.Raycast(origin, Vector2.up, checkDistanceJump, obstacleLayer).collider;
+            bool hitDown = Physics2D.Raycast(origin, Vector2.down, checkDistanceFall, obstacleLayer).collider;
+            return !hitUp && hitDown;
+        }
+        if (direction == Vector2.down) // Fall Check
+        {
+            return !Physics2D.Raycast(origin, Vector2.down, checkDistanceFall, obstacleLayer).collider;
+        }
+
+        return false;
+    }
+
+    private void ApplyMovement(Vector2 direction)
+    {
+        if (direction == Vector2.up)
+        {
+            transform.position += Vector3.up * jumpForce;
+        }
+        else if (direction == Vector2.down)
+        {
+            transform.position += Vector3.down * gravityForce;
+        }
+        else
+        {
+            // Handles Left and Right
+            transform.position += (Vector3)direction * moveSpeed;
+        }
+    }
+
+    private A_StarNode GetSmallestFromOpenList()
+    {
+        if (nodeList.Count == 0) return null;
+
+        A_StarNode smallestNode = (A_StarNode)nodeList[0];
+
+        for (int i = 1; i < nodeList.Count; i++)
+        {
+            A_StarNode openNode = (A_StarNode)nodeList[i];
+            
+            // Primary: Lowest F. Secondary: Highest G (tie-breaker)
+            if (openNode.getF() < smallestNode.getF() || 
+            (openNode.getF() == smallestNode.getF() && openNode.getG() > smallestNode.getG()))
+            {
+                smallestNode = openNode;
+            }
+        }
+
+        return smallestNode;
     }
 
     ///TODO: find another way to calculate h(n) and/or g(n) that has fewer ties??

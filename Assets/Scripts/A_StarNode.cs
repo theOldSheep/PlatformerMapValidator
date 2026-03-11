@@ -1,46 +1,34 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using System;
 
-public class A_StarNode : ScriptableObject{   
-    
-    private Vector2 position;
+public class A_StarNode : ScriptableObject 
+{   
+    private GameStateSnapshot _state;
+    private Vector2 _position; // Keep for heuristic calculations
     private float g_n;
     private float h_n;
     private float f_n;
 
-    //set up values
-    public void nodeSetup(Vector2 pos, float g, float h){
-        position = pos;
+    public GameStateSnapshot State => _state;
+
+    public void nodeSetup(GameStateSnapshot state, Vector2 pos, float g, float h)
+    {
+        _state = state;
+        _position = pos;
         g_n = g;
         h_n = h;
-        f_n = (float)Math.Round(g + h, 0);
+        // F is the cost + heuristic
+        f_n = (float)Math.Round(g + h, 2); 
     }
 
-    //getters
-    public Vector2 getPosition(){
-        return position;
-    }
+    public Vector2 getPosition() => _position;
+    public float getG() => g_n;
+    public float getH() => h_n;
+    public float getF() => f_n;
 
-    public float getG(){
-        return (float)Math.Round(g_n, 0);
+    public bool isEqual(A_StarNode other)
+    {
+        // Use the snapshot's built-in equality (based on encoded features)
+        return _state.Equals(other.State);
     }
-
-    public float getH(){
-        //return h_n;
-        return (float)Math.Round(h_n, 0);
-    }
-
-    public float getF(){
-        return f_n;
-    }
-
-    //helper function to check if two nodes are equal
-    public bool isEqual(A_StarNode n2){
-        return (position == n2.position 
-                && g_n == n2.g_n 
-                && h_n == n2.h_n);
-    }
-
 }

@@ -11,10 +11,10 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
 {
 
     [Header("State Repr Settings")]
-    public static float posClampX = 25f;
-    public static float posClampY = 25f;
-    public static float posStepX = 0.2f;
-    public static float posStepY = 0.2f;
+    public static float posClampX = 60f;
+    public static float posClampY = 15f;
+    public static float posStepX = 0.5f;
+    public static float posStepY = 0.5f;
     private static List<IStateFeature> _cachedGameStateFeatures = new List<IStateFeature> {
         new StateFeature<float> {
             Type = FeatureType.Continuous,
@@ -209,8 +209,6 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
 
     }
 
-
-
     public MovementSnapshot CaptureSnapshot()
     {
         return new MovementSnapshot
@@ -295,5 +293,10 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         rb.velocity.x,
         rb.velocity.y,
     };
+    public void RestoreFeaturesRawValue(List<object> rawValues)
+    {
+        transform.position = new Vector3((float)rawValues[0], (float)rawValues[1], transform.position.z);
+        rb.velocity = new Vector2((float)rawValues[2], (float)rawValues[3]);
+    }
 }
 
