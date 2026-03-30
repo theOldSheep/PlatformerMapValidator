@@ -4,27 +4,23 @@ using UnityEngine;
 public class StatefulCoin : MonoBehaviour, IStateComponent
 {
     private bool _isCollected = false;
-    public static float posStepX = 1.0f;
-    public static float posStepY = 1.0f;
-    private static List<IStateFeature> _cachedGameStateFeatures = new List<IStateFeature> {
-        new StateFeature<float> {
-            Type = FeatureType.Continuous,
-            Granularity=posStepX
-        },
-        new StateFeature<float> {
-            Type = FeatureType.Continuous,
-            Granularity=posStepY 
-        },
-        new StateFeature<bool> {
-            Type = FeatureType.Discrete,
-        },
-    };
 
     public void Collect() {
         _isCollected = true;
         gameObject.SetActive(false);
     }
 
+    private static List<IStateFeature> _cachedGameStateFeatures = new List<IStateFeature> {
+        new StatePosVelFeature<float> {
+            Type = PosVelType.PosX
+        },
+        new StatePosVelFeature<float> {
+            Type = PosVelType.PosY
+        },
+        new StateFeature<bool> {
+            RelevanceProvider = () => false
+        },
+    };
     public static List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;
     public List<object> GetFeaturesRawValue() => new List<object> {
         transform.position.x,

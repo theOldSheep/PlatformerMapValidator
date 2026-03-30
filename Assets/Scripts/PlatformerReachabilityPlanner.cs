@@ -1,8 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using Unity.Mathematics;
 using UnityEngine;
-using UnityEngine.Scripting.APIUpdating;
 
 public class PlatformerReachabilityPlanner : MonoBehaviour
 {
@@ -12,27 +11,40 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
 
     [Header("Search Settings")]
     [SerializeField] private int MaxExpansions = 5000;
-    private const float StepDt = 0.02f;
-    private const int StepsPerAction = 5;
-    private const float GoalRadius = 0.5f;
+    [SerializeField] private float StepDt = 0.02f;
+    [SerializeField] private int StepsPerAction = 3;
+    [SerializeField] private float GoalReachRadiusTolerance = 0.5f;
+    [Header("Reachability & Heurisitical Cache Mesh Settings")]
+    [SerializeField] private int MeshExpansionPerNode = 100;
+    [SerializeField] private int MeshExpansionPathLen = 10;
+    [SerializeField] private float PosMeshGanularity = 2;
+    [SerializeField] private float PosMeshAcceptanceRadius = 0.25f;
+    [SerializeField] private float MeshSnappingHeuristicWeight = 3.5f;
+    private Dictionary<GameStateSnapshot, int> GameStateToMeshNodeIdx = new Dictionary<GameStateSnapshot, int>();
+    private Dictionary<int, GameStateSnapshot> MeshNodeIdxToGameState = new Dictionary<int, GameStateSnapshot>();
+    private Dictionary<int, Dictionary<int, float>> MeshEdges = new Dictionary<int, Dictionary<int, float>>();
+    private int nextGameStateIdx = 0;
 
-    // Use GameStateSnapshot as the key for the visited set
-    private readonly HashSet<GameStateSnapshot> visitedStates = new HashSet<GameStateSnapshot>();
+
+    // For drawing the last generated path
     private readonly List<Vector3> lastPathPoints = new List<Vector3>();
 
-    public class SearchNode : IComparable<SearchNode>
+
+    public class PathSearchNode : IComparable<PathSearchNode>
     {
         public GameStateSnapshot State;
         public Vector2 Position;
+        public PathSearchNode Parent;
+
+        // For mesh construction only - terminate based on route length
+        public int PathLen;
+        
         public float G;
         public float H;
-        public SearchNode Parent; // No longer causes a cycle
-        public PlayerMovement.MoveAction ActionTaken;
-
         public float F => G + H;
 
         // A* typically picks the lowest F score
-        public int CompareTo(SearchNode other)
+        public int CompareTo(PathSearchNode other)
         {
             // Min-heap: We want the smallest F at the top
             int result = F.CompareTo(other.F);
@@ -44,123 +56,273 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
             }
             return result;
         }
+
+        public override bool Equals(object obj)
+        {
+            if (obj is PathSearchNode other)
+            {
+                // Use the Snapshot's built-in equality logic
+                return State.Equals(other.State);
+            }
+            return false;
+        }
+
+        public override int GetHashCode()
+        {
+            // Use the Snapshot's cached hash
+            return State.GetHashCode();
+        }
     }
 
-    [ContextMenu("Run State-Based A*")]
-    public void RunAStar()
+
+    [ContextMenu("Run Mesh Construction")]
+    public void RunReachabilityMeshConstruction()
     {
         if (player == null || stateManager == null || goal == null) {
             return;
         }
 
-        visitedStates.Clear();
-        lastPathPoints.Clear();
+        // Clear mesh info
+        GameStateToMeshNodeIdx.Clear();
+        MeshNodeIdxToGameState.Clear();
+        MeshEdges.Clear();
+        nextGameStateIdx = 0;
 
-        // 1. Capture the initial world state
-        GameStateSnapshot startState = stateManager.CaptureState();
-        Vector2 startPos = player.transform.position;
-        Vector2 goalPos = goal.position;
-        // Capture current world state and physics mode
-        GameStateSnapshot initialWorldState = stateManager.CaptureState();
-        SimulationMode2D previousMode = Physics2D.simulationMode;
-        Physics2D.simulationMode = SimulationMode2D.Script;
-
+        PhysicsSimulator.BeginSimulation(stateManager);
         try {
-            var openList = new PriorityQueue<SearchNode>();
-            
-            SearchNode root = new SearchNode {
-                State = startState,
-                Position = startPos,
-                G = 0,
-                H = Vector2.Distance(startPos, goalPos)
-            };
+            Stack<PathSearchNode> nextNodes = new Stack<PathSearchNode>();
 
-            openList.Push(root);
-            int expansions = 0;
-
-            while (openList.Count > 0 && expansions < MaxExpansions)
+            GameStateSnapshot startState = stateManager.CaptureState();
+            PathSearchNode startNode = new PathSearchNode()
             {
-                SearchNode current = openList.Pop();
+                State = startState,
+                Position = player.transform.position,
+                Parent = null,
+                PathLen = 0,
+                G = 0f,
+                H = 0f
+            };
+            nextNodes.Push(startNode);
 
-                // Check if we already visited this specific encoded state
-                if (visitedStates.Contains(current.State)) continue;
-                visitedStates.Add(current.State);
-                expansions++;
+            RecordMeshNode(startNode);
 
-                // Check Goal
-                if (Vector2.Distance(current.Position, goalPos) < GoalRadius)
+            while (nextNodes.Count > 0) {
+                Debug.Log(nextGameStateIdx);
+                // Plan from the next reachable mesh node
+                PathSearchNode currNode = nextNodes.Pop();
+                GameStateSnapshot currState = currNode.State;
+                Vector2 currPos = currNode.Position;
+                int currMeshNodeIdx = GameStateToMeshNodeIdx[currState];
+
+                // Starting with current position
+                var StartingNodes = new List<PathSearchNode> 
                 {
-                    Debug.Log($"Goal Found! Expansions: {expansions}");
-                    GeneratePath(current);
-                    return;
+                    currNode
+                };
+                // Movements' state transformation provider
+                Func<PathSearchNode, List<PathSearchNode>> FutureStatesProvider = (current) =>
+                {
+                    var result = new List<PathSearchNode>();
+                    var availableActions = player.GetCandidateActions();
+
+                    foreach (var action in availableActions)
+                    {
+                        PhysicsSimulator.SetGameState(stateManager, current.State);
+
+                        PhysicsSimulator.SimulatePlyAction(player, action, StepDt, StepsPerAction);
+
+                        // 5. Capture the resulting state
+                        GameStateSnapshot nextState = stateManager.CaptureState();
+                        Vector2 nextPos = player.transform.position;
+
+                        float newG = current.G + Vector2.Distance(current.Position, nextPos);
+                        float heuristicValue = DistToMeshNode(nextPos, currPos, player);
+                        
+                        result.Add(new PathSearchNode {
+                            State = nextState,
+                            Position = nextPos,
+                            Parent = current,
+                            PathLen = current.PathLen + 1,
+                            G = newG,
+                            H = MeshSnappingHeuristicWeight * heuristicValue
+                        });
+                    }
+                    return result;
+                };
+                // Node visited is close to target? Terminate.
+                Func<PathSearchNode, AStarSearch.AStarNodeVisitAction> NodeVisitHook = (node) =>
+                {
+                    if (node.PathLen > MeshExpansionPathLen)
+                    {
+                        return AStarSearch.AStarNodeVisitAction.Skip;
+                    }
+                    if (DistToMeshNode(node.Position, currPos, player) * PosMeshGanularity < PosMeshAcceptanceRadius)
+                    {
+                        // Reached a new mesh node
+                        if (! GameStateToMeshNodeIdx.ContainsKey(node.State))
+                        {
+                            RecordMeshNode(node);
+                            // Add the found node to the stack
+                            nextNodes.Push(node);
+                        }
+                        // Record connection
+                        int reachedMeshNodeIdx = GameStateToMeshNodeIdx[node.State];
+                        float minDist = node.G;
+                        var currMeshDistDict = MeshEdges[currMeshNodeIdx];
+                        if (currMeshDistDict.ContainsKey(reachedMeshNodeIdx))
+                        {
+                            minDist = Math.Min(minDist, currMeshDistDict[reachedMeshNodeIdx]);
+                        }
+                        MeshEdges[currMeshNodeIdx][reachedMeshNodeIdx] = minDist;
+                    }
+                    return AStarSearch.AStarNodeVisitAction.Allow;
+                };
+                // Construct cfg and execute
+                AStarSearch.AStarConfig<PathSearchNode> cfg = new AStarSearch.AStarConfig<PathSearchNode>
+                {
+                    MaxExpansions = MeshExpansionPerNode,
+                    StartingNodes = StartingNodes,
+                    FutureStatesProvider = FutureStatesProvider,
+                    NodeVisitHook = NodeVisitHook
+                };
+
+                AStarSearch.RunAStar(cfg);
+            }
+        } 
+        finally
+        {
+            PhysicsSimulator.EndSimulation(stateManager);
+        }
+    }
+
+    private float DistToMeshNode(Vector2 pos, Vector2 startPos, PlayerMovement ghost)
+    {
+        float xDiff = Math.Abs(startPos.x - pos.x) / PosMeshGanularity;
+        float yDiff = Math.Abs(startPos.y - pos.y) / PosMeshGanularity;
+        xDiff -= (int)xDiff;
+        yDiff -= (int)yDiff;
+        return (float)Math.Sqrt(xDiff * xDiff + yDiff * yDiff);
+    }
+
+    private void RecordMeshNode(PathSearchNode node)
+    {
+        if (! GameStateToMeshNodeIdx.ContainsKey(node.State))
+        {
+            nextGameStateIdx ++;
+            GameStateToMeshNodeIdx.Add(node.State, nextGameStateIdx);
+            MeshNodeIdxToGameState.Add(nextGameStateIdx, node.State);
+            MeshEdges.Add(nextGameStateIdx, new Dictionary<int, float>());
+        }
+    }
+
+
+    [ContextMenu("Run A* (Reach Goal)")]
+    public void RunAStar() => RunInternalSearch(heuristicWeight: 1f);
+
+    [ContextMenu("Run Dijkstra (Reachability Map)")]
+    public void RunDijkstra() => RunInternalSearch(heuristicWeight: 0f);
+
+    public void RunInternalSearch(float heuristicWeight)
+    {
+        if (player == null || stateManager == null || goal == null) {
+            return;
+        }
+
+        PhysicsSimulator.BeginSimulation(stateManager);
+        try {
+            Vector2 goalPos = goal.position;
+            // Starting with current position
+            var StartingNodes = new List<PathSearchNode>
+            {
+                new PathSearchNode()
+                {
+                    State = stateManager.CaptureState(),
+                    Position = player.transform.position,
+                    Parent = null,
+                    G = 0f,
+                    H = 0f
                 }
-
-                // 2. Restore the entire world to the current node's state
-                // This resets coins, platforms, and player variables
-                stateManager.RestoreState(current.State);
-
-                // 3. Explore using the generic Action Abstraction
+            };
+            // Movements' state transformation provider
+            Func<PathSearchNode, List<PathSearchNode>> FutureStatesProvider = (current) =>
+            {
+                var result = new List<PathSearchNode>();
                 var availableActions = player.GetCandidateActions();
 
                 foreach (var action in availableActions)
                 {
-                    // Always restore back to 'current' before trying a different branch
-                    stateManager.RestoreState(current.State);
+                    PhysicsSimulator.SetGameState(stateManager, current.State);
 
-                    // 4. Simulate the action
-                    player.ApplyAction(action);
-                    
-                    // Advance physics for a few steps to see the result of the action
-                    for (int i = 0; i < StepsPerAction; i++)
-                    {
-                        // 1. Ensure Raycasts/Collisions are in sync with current positions
-                        Physics2D.SyncTransforms(); 
-                        
-                        // 2. Call the logic that updates velocities based on input/state
-                        player.SimulateStep(StepDt); 
-                        
-                        // 3. Move the physical bodies
-                        Physics2D.Simulate(StepDt);
-                    }
+                    PhysicsSimulator.SimulatePlyAction(player, action, StepDt, StepsPerAction);
 
                     // 5. Capture the resulting state
                     GameStateSnapshot nextState = stateManager.CaptureState();
                     Vector2 nextPos = player.transform.position;
 
-                    if (!visitedStates.Contains(nextState))
-                    {
-                        float cost = Vector2.Distance(current.Position, nextPos);
-                        openList.Push(new SearchNode {
-                            State = nextState,
-                            Position = nextPos,
-                            G = current.G + cost,
-                            H = Vector2.Distance(nextPos, goalPos),
-                            Parent = current,
-                            ActionTaken = action
-                        });
-                    }
+                    float newG = current.G + Vector2.Distance(current.Position, nextPos);
+                    float heuristicValue = PathSearchHeuristic(nextPos, goalPos, player);
+                    
+                    result.Add(new PathSearchNode {
+                        State = nextState,
+                        Position = nextPos,
+                        Parent = current,
+                        G = newG,
+                        H = heuristicWeight * heuristicValue
+                    });
                 }
-            }
-            
-            Debug.LogWarning("Goal not reached within MaxExpansions.");
-        }
-        finally 
-        {
-            // RESTORE: This block runs even if the search crashes
-            // 1. Put the player/coins back to where they were before the button was clicked
-            stateManager.RestoreState(initialWorldState);
-            
-            // 2. Give control back to Unity's automatic physics
-            Physics2D.simulationMode = previousMode;
+                return result;
+            };
+            // Node visited is close to target? Terminate.
+            Func<PathSearchNode, AStarSearch.AStarNodeVisitAction> NodeVisitHook = (node) =>
+            {
+                if (Vector2.Distance(node.Position, goalPos) < GoalReachRadiusTolerance)
+                {
+                    GeneratePath(node);
+                    return AStarSearch.AStarNodeVisitAction.Terminate;
+                }
+                return AStarSearch.AStarNodeVisitAction.Allow;
+            };
+            // The printing statement
+            Action<AStarSearch.AStarSearchFinishCause, int> SearchFinishTrigger = (cause, expansion) =>
+            {
+                switch (cause)
+                {
+                    case AStarSearch.AStarSearchFinishCause.TerminatedOnVisit:
+                        Debug.Log($"Search finished successfully with {expansion} expansions.");
+                        break;
+                    case AStarSearch.AStarSearchFinishCause.ExpansionLimit:
+                        Debug.Log("Search max expansion reached.");
+                        break;
+                }
+            };
+            // Construct cfg and execute
+            AStarSearch.AStarConfig<PathSearchNode> cfg = new AStarSearch.AStarConfig<PathSearchNode>
+            {
+                MaxExpansions = MaxExpansions,
+                StartingNodes = StartingNodes,
+                FutureStatesProvider = FutureStatesProvider,
+                NodeVisitHook = NodeVisitHook,
+                SearchFinishTrigger = SearchFinishTrigger
+            };
 
-            // player.ApplyAction(new PlayerMovement.MoveAction(PlayerMovement.MoveActionType.None));
+            AStarSearch.RunAStar(cfg);
+        } 
+        finally
+        {
+            PhysicsSimulator.EndSimulation(stateManager);
         }
     }
 
-    private void GeneratePath(SearchNode endNode)
+    private float PathSearchHeuristic(Vector2 pos, Vector2 goalPos, PlayerMovement ghost)
+    {
+        // return 0;
+        return Vector2.Distance(pos, goalPos);
+    }
+
+    private void GeneratePath(PathSearchNode endNode)
     {
         lastPathPoints.Clear();
-        SearchNode temp = endNode;
+        PathSearchNode temp = endNode;
         while (temp.Parent != null)
         {
             lastPathPoints.Add(temp.Position);
@@ -176,64 +338,6 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
         for (int i = 0; i < lastPathPoints.Count - 1; i++)
         {
             Gizmos.DrawLine(lastPathPoints[i], lastPathPoints[i+1]);
-        }
-    }
-    
-    public class PriorityQueue<T> where T : IComparable<T>
-    {
-        private List<T> heap = new List<T>();
-
-        public int Count => heap.Count;
-
-        public void Push(T item)
-        {
-            heap.Add(item);
-            int i = heap.Count - 1;
-            // Bubble Up
-            while (i > 0)
-            {
-                int parent = (i - 1) / 2;
-                if (heap[i].CompareTo(heap[parent]) >= 0) break;
-                
-                T temp = heap[i];
-                heap[i] = heap[parent];
-                heap[parent] = temp;
-                i = parent;
-            }
-        }
-
-        public T Pop()
-        {
-            if (heap.Count == 0) return default;
-
-            T result = heap[0];
-            int lastIndex = heap.Count - 1;
-            heap[0] = heap[lastIndex];
-            heap.RemoveAt(lastIndex);
-
-            lastIndex--;
-            int i = 0;
-            // Bubble Down
-            while (true)
-            {
-                int left = i * 2 + 1;
-                int right = i * 2 + 2;
-                int smallest = i;
-
-                if (left <= lastIndex && heap[left].CompareTo(heap[smallest]) < 0)
-                    smallest = left;
-                if (right <= lastIndex && heap[right].CompareTo(heap[smallest]) < 0)
-                    smallest = right;
-
-                if (smallest == i) break;
-
-                T temp = heap[i];
-                heap[i] = heap[smallest];
-                heap[smallest] = temp;
-                i = smallest;
-            }
-
-            return result;
         }
     }
 }

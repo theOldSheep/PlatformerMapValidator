@@ -4,6 +4,32 @@ using UnityEngine;
 
 public class StateManager : MonoBehaviour
 {
+    public struct StateEncodingSettings
+    {
+        public float MaxX;
+        public float MinX;
+        public float MaxY;
+        public float MinY;
+        public float PosVelGranularity;
+    }
+
+    [Header("State Representation Settings")]
+    [SerializeField] private float MaxX = 60;
+    [SerializeField] private float MinX = -10;
+    [SerializeField] private float MaxY = 15;
+    [SerializeField] private float MinY = -15;
+    [SerializeField] private float PosVelGranularity = 0.5f;
+    private StateEncodingSettings StateEncodingSetting => new StateEncodingSettings
+    {
+        MaxX = MaxX,
+        MinX = MinX,
+        MaxY = MaxY,
+        MinY = MinY,
+        PosVelGranularity = PosVelGranularity
+    };
+
+
+
     private struct ObjectStateData
     {
         public int TypeID;
@@ -24,7 +50,7 @@ public class StateManager : MonoBehaviour
             var pairs = new List<FeatureSnapshot>();
             for (int i = 0; i < stateFeatures.Count; i++)
             {
-                int encoded = stateFeatures[i].Encode(rawValues[i]);
+                int encoded = stateFeatures[i].Encode(rawValues[i], StateEncodingSetting);
                 pairs.Add(new FeatureSnapshot(rawValues[i], encoded));
             }
 

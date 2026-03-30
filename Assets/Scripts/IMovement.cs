@@ -2,7 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-interface IMovement
+public interface IMovement
 {
     //player must implement these functions
     void Jump();
