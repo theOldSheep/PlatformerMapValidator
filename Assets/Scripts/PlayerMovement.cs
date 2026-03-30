@@ -264,10 +264,10 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
             Type = PosVelType.PosY
         },
         new StatePosVelFeature<float> {
-            Type = PosVelType.Vel
+            Type = PosVelType.VelX
         },
         new StatePosVelFeature<float> {
-            Type = PosVelType.Vel
+            Type = PosVelType.VelY
         },
         new StateFeature<bool> {
             Type = FeatureType.Discrete,

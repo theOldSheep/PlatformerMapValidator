@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 public enum FeatureType { Discrete, Continuous }
-public enum PosVelType { PosX, PosY, Vel }
+public enum PosVelType { PosX, PosY, VelX, VelY }
 
 public interface IStateFeature
 {
@@ -47,16 +47,25 @@ public struct StatePosVelFeature<T> : IStateFeature
             return 0;
         }
         float Value = (float)rawValue;
+        float Granularity = 1f;
         switch (Type)
         {
             case PosVelType.PosX:
                 Value = Math.Clamp(Value, settings.MinX, settings.MaxX);
+                Granularity = settings.PosXGranularity;
                 break;
             case PosVelType.PosY:
                 Value = Math.Clamp(Value, settings.MinY, settings.MaxY);
+                Granularity = settings.PosYGranularity;
+                break;
+            case PosVelType.VelX:
+                Granularity = settings.VelXGranularity;
+                break;
+            case PosVelType.VelY:
+                Granularity = settings.VelYGranularity;
                 break;
         }
-        return Mathf.FloorToInt(Value / settings.PosVelGranularity);
+        return Mathf.FloorToInt(Value / Granularity);
     }
 }
 

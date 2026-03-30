@@ -48,4 +48,6 @@ MonoBehaviour:
   MinX: -10
   MaxY: 15
   MinY: -15
-  PosVelGranularity: 0.5
+  PosGranularity: 0.5
+  VelXGranularity: 3
+  VelYGranularity: 3

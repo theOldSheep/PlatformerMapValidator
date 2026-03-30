@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Unity.Mathematics;
 using UnityEngine;
 
 public class PlatformerReachabilityPlanner : MonoBehaviour
@@ -9,35 +8,51 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
     [SerializeField] private StateManager stateManager; // Link to the new StateManager
     [SerializeField] private Transform goal;
 
+    [Header("Action Cost Settings")]
+    [SerializeField] private float moveMultiplier = 1.0f;
+    [SerializeField] private float jumpMultiplier = 3.0f; // Jumps are 3x more "expensive"
+    [SerializeField] private float idleMultiplier = 0.5f;
+
     [Header("Search Settings")]
     [SerializeField] private int MaxExpansions = 5000;
     [SerializeField] private float StepDt = 0.02f;
     [SerializeField] private int StepsPerAction = 3;
     [SerializeField] private float GoalReachRadiusTolerance = 0.5f;
-    [Header("Reachability & Heurisitical Cache Mesh Settings")]
-    [SerializeField] private int MeshExpansionPerNode = 100;
-    [SerializeField] private int MeshExpansionPathLen = 10;
-    [SerializeField] private float PosMeshGanularity = 2;
-    [SerializeField] private float PosMeshAcceptanceRadius = 0.25f;
+    
+    [Header("Reachability & Heurisitical Cache Mesh Generation Settings")]
+    [SerializeField] private float PosMeshGranularity = 2.0f;
+    [SerializeField] private float PosMeshRadius = 0.5f;
+    [SerializeField] private int MaxExpansionsPerEpoch = 3;
     [SerializeField] private float MeshSnappingHeuristicWeight = 3.5f;
+    [Header("Reachability & Heurisitical Cache Mesh Display Settings")]
+    [SerializeField] private Gradient distanceGradient; // Set this in Inspector (Green to Red)
+    [SerializeField] private float nodeSize = 0.15f;
+    
+    // Mesh Data
+    private readonly Vector2Int[] Directions = new Vector2Int[]
+    {
+        new Vector2Int(-1,  1), new Vector2Int(0,  1), new Vector2Int(1,  1),
+        new Vector2Int(-1,  0),                        new Vector2Int(1,  0),
+        new Vector2Int(-1, -1), new Vector2Int(0, -1), new Vector2Int(1, -1)
+    };
     private Dictionary<GameStateSnapshot, int> GameStateToMeshNodeIdx = new Dictionary<GameStateSnapshot, int>();
-    private Dictionary<int, GameStateSnapshot> MeshNodeIdxToGameState = new Dictionary<int, GameStateSnapshot>();
+    private Dictionary<int, Vector2> MeshNodeIdxToPosition = new Dictionary<int, Vector2>();
     private Dictionary<int, Dictionary<int, float>> MeshEdges = new Dictionary<int, Dictionary<int, float>>();
     private int nextGameStateIdx = 0;
 
 
-    // For drawing the last generated path
+    // Visualization Data
+    private readonly List<Vector2> exploredPositions = new List<Vector2>();
+    private Dictionary<int, float> meshNodeDistances = new Dictionary<int, float>();
+    private float maxDistanceFound = 1f;
     private readonly List<Vector3> lastPathPoints = new List<Vector3>();
 
-
+    // Node used for both search and mesh construction
     public class PathSearchNode : IComparable<PathSearchNode>
     {
         public GameStateSnapshot State;
         public Vector2 Position;
         public PathSearchNode Parent;
-
-        // For mesh construction only - terminate based on route length
-        public int PathLen;
         
         public float G;
         public float H;
@@ -74,147 +89,238 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
         }
     }
 
+    /*
+     *
+     *   Below: mesh construction
+     *
+     */
 
-    [ContextMenu("Run Mesh Construction")]
+    // Simulation cache for mesh generation
+    private struct SimulationOutcome
+    {
+        public GameStateSnapshot ResultState;
+        public Vector2 ResultPosition;
+        public float WeightedCost;
+    }
+    private readonly Dictionary<GameStateSnapshot, List<SimulationOutcome>> simulationCache 
+        = new Dictionary<GameStateSnapshot, List<SimulationOutcome>>();
+
+    [ContextMenu("Run 8-Epoch Mesh Construction")]
     public void RunReachabilityMeshConstruction()
     {
-        if (player == null || stateManager == null || goal == null) {
-            return;
-        }
-
-        // Clear mesh info
+        // 1. Clear everything at the start of a full run
         GameStateToMeshNodeIdx.Clear();
-        MeshNodeIdxToGameState.Clear();
+        MeshNodeIdxToPosition.Clear();
         MeshEdges.Clear();
+        exploredPositions.Clear();
+        simulationCache.Clear(); // Clear cache for a fresh run
+        meshNodeDistances.Clear();
         nextGameStateIdx = 0;
 
         PhysicsSimulator.BeginSimulation(stateManager);
-        try {
-            Stack<PathSearchNode> nextNodes = new Stack<PathSearchNode>();
-
-            GameStateSnapshot startState = stateManager.CaptureState();
-            PathSearchNode startNode = new PathSearchNode()
-            {
-                State = startState,
-                Position = player.transform.position,
-                Parent = null,
-                PathLen = 0,
-                G = 0f,
-                H = 0f
-            };
-            nextNodes.Push(startNode);
-
-            RecordMeshNode(startNode);
-
-            while (nextNodes.Count > 0) {
-                Debug.Log(nextGameStateIdx);
-                // Plan from the next reachable mesh node
-                PathSearchNode currNode = nextNodes.Pop();
-                GameStateSnapshot currState = currNode.State;
-                Vector2 currPos = currNode.Position;
-                int currMeshNodeIdx = GameStateToMeshNodeIdx[currState];
-
-                // Starting with current position
-                var StartingNodes = new List<PathSearchNode> 
-                {
-                    currNode
-                };
-                // Movements' state transformation provider
-                Func<PathSearchNode, List<PathSearchNode>> FutureStatesProvider = (current) =>
-                {
-                    var result = new List<PathSearchNode>();
-                    var availableActions = player.GetCandidateActions();
-
-                    foreach (var action in availableActions)
-                    {
-                        PhysicsSimulator.SetGameState(stateManager, current.State);
-
-                        PhysicsSimulator.SimulatePlyAction(player, action, StepDt, StepsPerAction);
-
-                        // 5. Capture the resulting state
-                        GameStateSnapshot nextState = stateManager.CaptureState();
-                        Vector2 nextPos = player.transform.position;
-
-                        float newG = current.G + Vector2.Distance(current.Position, nextPos);
-                        float heuristicValue = DistToMeshNode(nextPos, currPos, player);
-                        
-                        result.Add(new PathSearchNode {
-                            State = nextState,
-                            Position = nextPos,
-                            Parent = current,
-                            PathLen = current.PathLen + 1,
-                            G = newG,
-                            H = MeshSnappingHeuristicWeight * heuristicValue
-                        });
-                    }
-                    return result;
-                };
-                // Node visited is close to target? Terminate.
-                Func<PathSearchNode, AStarSearch.AStarNodeVisitAction> NodeVisitHook = (node) =>
-                {
-                    if (node.PathLen > MeshExpansionPathLen)
-                    {
-                        return AStarSearch.AStarNodeVisitAction.Skip;
-                    }
-                    if (DistToMeshNode(node.Position, currPos, player) * PosMeshGanularity < PosMeshAcceptanceRadius)
-                    {
-                        // Reached a new mesh node
-                        if (! GameStateToMeshNodeIdx.ContainsKey(node.State))
-                        {
-                            RecordMeshNode(node);
-                            // Add the found node to the stack
-                            nextNodes.Push(node);
-                        }
-                        // Record connection
-                        int reachedMeshNodeIdx = GameStateToMeshNodeIdx[node.State];
-                        float minDist = node.G;
-                        var currMeshDistDict = MeshEdges[currMeshNodeIdx];
-                        if (currMeshDistDict.ContainsKey(reachedMeshNodeIdx))
-                        {
-                            minDist = Math.Min(minDist, currMeshDistDict[reachedMeshNodeIdx]);
-                        }
-                        MeshEdges[currMeshNodeIdx][reachedMeshNodeIdx] = minDist;
-                    }
-                    return AStarSearch.AStarNodeVisitAction.Allow;
-                };
-                // Construct cfg and execute
-                AStarSearch.AStarConfig<PathSearchNode> cfg = new AStarSearch.AStarConfig<PathSearchNode>
-                {
-                    MaxExpansions = MeshExpansionPerNode,
-                    StartingNodes = StartingNodes,
-                    FutureStatesProvider = FutureStatesProvider,
-                    NodeVisitHook = NodeVisitHook
-                };
-
-                AStarSearch.RunAStar(cfg);
-            }
-        } 
-        finally
+        try
         {
-            PhysicsSimulator.EndSimulation(stateManager);
+            Queue<PathSearchNode> discoveryQueue = new Queue<PathSearchNode>();
+            
+            PathSearchNode startNode = new PathSearchNode {
+                State = stateManager.CaptureState(),
+                Position = player.transform.position,
+                G = 0
+            };
+            RecordMeshNode(startNode);
+            discoveryQueue.Enqueue(startNode);
+
+            while (discoveryQueue.Count > 0)
+            {
+                PathSearchNode currentNode = discoveryQueue.Dequeue();
+                int currentIdx = GameStateToMeshNodeIdx[currentNode.State];
+
+                foreach (Vector2Int dir in Directions)
+                {
+                    Vector2 targetNeighborPos = currentNode.Position + (new Vector2(dir.x, dir.y) * PosMeshGranularity);
+                    
+                    AStarSearch.RunAStar(new AStarSearch.AStarConfig<PathSearchNode>
+                    {
+                        MaxExpansions = MaxExpansionsPerEpoch,
+                        StartingNodes = new List<PathSearchNode> { currentNode },
+                        // GetNeighbors now uses the cache!
+                        FutureStatesProvider = (curr) => GetNeighborsWithCache(curr, targetNeighborPos),
+                        NodeVisitHook = (visited) => 
+                        {
+                            exploredPositions.Add(visited.Position);
+                            if (IsInNeighborCell(visited.Position, targetNeighborPos))
+                            {
+                                if (!GameStateToMeshNodeIdx.ContainsKey(visited.State))
+                                {
+                                    RecordMeshNode(visited);
+                                    discoveryQueue.Enqueue(visited);
+                                }
+                                AddEdge(currentIdx, GameStateToMeshNodeIdx[visited.State], visited.G);
+                                return AStarSearch.AStarNodeVisitAction.Terminate;
+                            }
+                            return AStarSearch.AStarNodeVisitAction.Allow;
+                        }
+                    });
+                }
+            }
+            CalculateShortestPathDistances();
+        }
+        finally { PhysicsSimulator.EndSimulation(stateManager); }
+    }
+
+    private List<PathSearchNode> GetNeighborsWithCache(PathSearchNode current, Vector2 targetPos)
+    {
+        if (!simulationCache.TryGetValue(current.State, out List<SimulationOutcome> outcomes))
+        {
+            outcomes = new List<SimulationOutcome>();
+            var actions = player.GetCandidateActions();
+
+            foreach (var action in actions)
+            {
+                PhysicsSimulator.SetGameState(stateManager, current.State);
+                Vector2 startPos = player.transform.position;
+
+                PhysicsSimulator.SimulatePlyAction(player, action, StepDt, StepsPerAction);
+
+                float distance = Vector2.Distance(startPos, player.transform.position);
+                
+                // Calculate cost based on action type
+                float multiplier = GetActionMultiplier(action.type);
+                float stepCost = distance * multiplier;
+
+                // Penalty for idling (optional): if player didn't move, give a flat time penalty
+                if (distance < 0.01f) stepCost = StepDt * StepsPerAction * idleMultiplier;
+
+                outcomes.Add(new SimulationOutcome
+                {
+                    ResultState = stateManager.CaptureState(),
+                    ResultPosition = player.transform.position,
+                    WeightedCost = stepCost
+                });
+            }
+            simulationCache[current.State] = outcomes;
+        }
+
+        var neighborNodes = new List<PathSearchNode>(outcomes.Count);
+        foreach (var outcome in outcomes)
+        {
+            neighborNodes.Add(new PathSearchNode
+            {
+                State = outcome.ResultState,
+                Position = outcome.ResultPosition,
+                Parent = current,
+                // G now accumulates the weighted cost
+                G = current.G + outcome.WeightedCost,
+                H = Vector2.Distance(outcome.ResultPosition, targetPos) * MeshSnappingHeuristicWeight
+            });
+        }
+        return neighborNodes;
+    }
+
+    private float GetActionMultiplier(PlayerMovement.MoveActionType type)
+    {
+        switch (type)
+        {
+            case PlayerMovement.MoveActionType.Jump:
+                return jumpMultiplier;
+            case PlayerMovement.MoveActionType.Left:
+            case PlayerMovement.MoveActionType.Right:
+                return moveMultiplier;
+            case PlayerMovement.MoveActionType.None:
+            default:
+                return idleMultiplier;
         }
     }
 
-    private float DistToMeshNode(Vector2 pos, Vector2 startPos, PlayerMovement ghost)
+    private bool IsInNeighborCell(Vector2 pos, Vector2 targetCenter)
     {
-        float xDiff = Math.Abs(startPos.x - pos.x) / PosMeshGanularity;
-        float yDiff = Math.Abs(startPos.y - pos.y) / PosMeshGanularity;
-        xDiff -= (int)xDiff;
-        yDiff -= (int)yDiff;
-        return (float)Math.Sqrt(xDiff * xDiff + yDiff * yDiff);
+        return Mathf.Abs(pos.x - targetCenter.x) < PosMeshRadius && 
+               Math.Abs(pos.y - targetCenter.y) < PosMeshRadius;
+    }
+
+    private void AddEdge(int from, int to, float weight)
+    {
+        if (!MeshEdges.ContainsKey(from)) MeshEdges[from] = new Dictionary<int, float>();
+        if (!MeshEdges[from].ContainsKey(to) || weight < MeshEdges[from][to])
+            MeshEdges[from][to] = weight;
     }
 
     private void RecordMeshNode(PathSearchNode node)
     {
-        if (! GameStateToMeshNodeIdx.ContainsKey(node.State))
+        if (!GameStateToMeshNodeIdx.ContainsKey(node.State))
         {
-            nextGameStateIdx ++;
+            nextGameStateIdx++;
             GameStateToMeshNodeIdx.Add(node.State, nextGameStateIdx);
-            MeshNodeIdxToGameState.Add(nextGameStateIdx, node.State);
-            MeshEdges.Add(nextGameStateIdx, new Dictionary<int, float>());
+            MeshNodeIdxToPosition.Add(nextGameStateIdx, node.Position);
         }
     }
 
+    private struct DijkstraNode : IComparable<DijkstraNode>
+    {
+        public int NodeIdx;
+        public float Distance;
+
+        public int CompareTo(DijkstraNode other)
+        {
+            // Min-priority: smaller distances come first
+            return Distance.CompareTo(other.Distance);
+        }
+    }
+    private void CalculateShortestPathDistances()
+    {
+        if (MeshNodeIdxToPosition.Count == 0) return;
+
+        // Start node is index 1 (the first one recorded)
+        int startNodeIdx = 1;
+        
+        // Initialize distances
+        meshNodeDistances.Clear();
+        foreach (var idx in MeshNodeIdxToPosition.Keys) 
+            meshNodeDistances[idx] = float.MaxValue;
+        
+        meshNodeDistances[startNodeIdx] = 0;
+
+        // Use the PriorityQueue from AStarSearch
+        var queue = new AStarSearch.PriorityQueue<DijkstraNode>();
+        var visited = new HashSet<int>();
+
+        queue.Push(new DijkstraNode { NodeIdx = startNodeIdx, Distance = 0f });
+
+        maxDistanceFound = 0.1f; // Avoid division by zero in Gizmos
+
+        while (queue.Count > 0)
+        {
+            DijkstraNode current = queue.Pop();
+            int u = current.NodeIdx;
+
+            if (visited.Contains(u)) continue;
+            visited.Add(u);
+
+            if (!MeshEdges.ContainsKey(u)) continue;
+
+            foreach (var edge in MeshEdges[u])
+            {
+                int v = edge.Key;
+                float weight = edge.Value;
+                float newDist = meshNodeDistances[u] + weight;
+
+                if (newDist < meshNodeDistances[v])
+                {
+                    meshNodeDistances[v] = newDist;
+                    queue.Push(new DijkstraNode { NodeIdx = v, Distance = newDist });
+                    
+                    if (newDist > maxDistanceFound) maxDistanceFound = newDist;
+                }
+            }
+        }
+    }
+
+
+    /*
+     *
+     *   Below: point path search
+     *
+     */
 
     [ContextMenu("Run A* (Reach Goal)")]
     public void RunAStar() => RunInternalSearch(heuristicWeight: 1f);
@@ -331,13 +437,43 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
         lastPathPoints.Reverse();
     }
 
+
+    /*
+     *
+     *   Below: display
+     *
+     */
+
     private void OnDrawGizmos()
     {
-        if (lastPathPoints.Count < 2) return;
-        Gizmos.color = Color.green;
-        for (int i = 0; i < lastPathPoints.Count - 1; i++)
+        if (MeshNodeIdxToPosition.Count > 0)
         {
-            Gizmos.DrawLine(lastPathPoints[i], lastPathPoints[i+1]);
+            foreach (var kvp in MeshNodeIdxToPosition)
+            {
+                int idx = kvp.Key;
+                Vector2 pos = kvp.Value;
+
+                if (meshNodeDistances.TryGetValue(idx, out float dist) && dist != float.MaxValue)
+                {
+                    // Normalize distance for the gradient (0.0 to 1.0)
+                    float t = Mathf.Clamp01(dist / maxDistanceFound);
+                    Gizmos.color = distanceGradient.Evaluate(t);
+                }
+                else
+                {
+                    // Unreachable nodes stay gray
+                    Gizmos.color = Color.gray;
+                }
+
+                Gizmos.DrawSphere(pos, nodeSize);
+            }
+        }
+
+        // 4. Draw Goal Path
+        if (lastPathPoints.Count >= 2) {
+            Gizmos.color = Color.green;
+            for (int i = 0; i < lastPathPoints.Count - 1; i++)
+                Gizmos.DrawLine(lastPathPoints[i], lastPathPoints[i + 1]);
         }
     }
 }

@@ -10,7 +10,10 @@ public class StateManager : MonoBehaviour
         public float MinX;
         public float MaxY;
         public float MinY;
-        public float PosVelGranularity;
+        public float PosXGranularity;
+        public float PosYGranularity;
+        public float VelXGranularity;
+        public float VelYGranularity;
     }
 
     [Header("State Representation Settings")]
@@ -18,14 +21,19 @@ public class StateManager : MonoBehaviour
     [SerializeField] private float MinX = -10;
     [SerializeField] private float MaxY = 15;
     [SerializeField] private float MinY = -15;
-    [SerializeField] private float PosVelGranularity = 0.5f;
+    [SerializeField] private float PosGranularity = 0.5f;
+    [SerializeField] private float VelXGranularity = 2f;
+    [SerializeField] private float VelYGranularity = 1.0f;
     private StateEncodingSettings StateEncodingSetting => new StateEncodingSettings
     {
         MaxX = MaxX,
         MinX = MinX,
         MaxY = MaxY,
         MinY = MinY,
-        PosVelGranularity = PosVelGranularity
+        PosXGranularity = PosGranularity,
+        PosYGranularity = PosGranularity,
+        VelXGranularity = VelXGranularity,
+        VelYGranularity = VelYGranularity,
     };
 
 
