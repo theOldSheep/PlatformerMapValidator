@@ -9,9 +9,10 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
     [SerializeField] private Transform goal;
 
     [Header("Action Cost Settings")]
-    [SerializeField] private float moveMultiplier = 1.0f;
-    [SerializeField] private float jumpMultiplier = 3.0f; // Jumps are 3x more "expensive"
     [SerializeField] private float idleMultiplier = 0.5f;
+    [SerializeField] private float moveMultiplier = 1.0f;
+    [SerializeField] private float jumpMultiplier = 3.0f;
+    [SerializeField] private float dashMultiplier = 3.0f;
 
     [Header("Search Settings")]
     [SerializeField] private int MaxExpansions = 5000;
@@ -24,6 +25,7 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
     [SerializeField] private float PosMeshRadius = 0.5f;
     [SerializeField] private int MaxExpansionsPerEpoch = 3;
     [SerializeField] private float MeshSnappingHeuristicWeight = 3.5f;
+    
     [Header("Reachability & Heurisitical Cache Mesh Display Settings")]
     [SerializeField] private Gradient distanceGradient; // Set this in Inspector (Green to Red)
     [SerializeField] private float nodeSize = 0.15f;
@@ -221,11 +223,13 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
     {
         switch (type)
         {
-            case PlayerMovement.MoveActionType.Jump:
-                return jumpMultiplier;
             case PlayerMovement.MoveActionType.Left:
             case PlayerMovement.MoveActionType.Right:
                 return moveMultiplier;
+            case PlayerMovement.MoveActionType.Jump:
+                return jumpMultiplier;
+            case PlayerMovement.MoveActionType.Dash:
+                return dashMultiplier;
             case PlayerMovement.MoveActionType.None:
             default:
                 return idleMultiplier;

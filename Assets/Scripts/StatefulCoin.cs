@@ -18,7 +18,7 @@ public class StatefulCoin : MonoBehaviour, IStateComponent
             Type = PosVelType.PosY
         },
         new StateFeature<bool> {
-            RelevanceProvider = () => false
+            CustomEncoding = (ignored) => 0
         },
     };
     public static List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;

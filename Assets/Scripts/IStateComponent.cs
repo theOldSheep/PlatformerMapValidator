@@ -14,17 +14,17 @@ public struct StateFeature<T> : IStateFeature
 {
     public FeatureType Type;
     public float Granularity;
-    public Func<bool> RelevanceProvider;
+    public Func<T, int> CustomEncoding;
 
     public int Encode(object rawValue, StateManager.StateEncodingSettings settings)
     {
-        if (RelevanceProvider != null && ! RelevanceProvider.Invoke())
+        if (CustomEncoding != null)
         {
             return 0;
         }
         if (Type == FeatureType.Continuous)
         {
-            return Mathf.FloorToInt((float)rawValue / Granularity);
+            return Mathf.FloorToInt(0.5f + (float) rawValue / Granularity);
         }
         else
         {
@@ -65,7 +65,7 @@ public struct StatePosVelFeature<T> : IStateFeature
                 Granularity = settings.VelYGranularity;
                 break;
         }
-        return Mathf.FloorToInt(Value / Granularity);
+        return Mathf.FloorToInt(0.5f + Value / Granularity);
     }
 }
 

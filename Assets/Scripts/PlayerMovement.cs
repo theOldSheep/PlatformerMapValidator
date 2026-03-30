@@ -1,10 +1,11 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
 
 public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
 {
-    public enum MoveActionType { None, Left, Right, Jump } //here need to add also the new mechanic....
+    public enum MoveActionType { None, Left, Right, Jump, Dash } //here need to add also the new mechanic....
     private readonly List<MoveAction> candidateActions = new List<MoveAction>(8);
 
     public void SetUseUnityInput(bool enabled) => useUnityInput = enabled;
@@ -17,31 +18,16 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
 
     }
 
-    [System.Serializable]
-    public struct MovementSnapshot
-    {
-        public Vector2 position;
-        public Vector2 velocity;
-
-        public float moveInput;
-        public bool wantJump;
-        //public bool wantDash; // example again here 
-
-        public bool isGrounded;
-        public int facing;
-        //public float dashCooldownRemaining;
-
-    }
-
 
     [Header("Movement Settings")]
     public float moveSpeed = 5f;
     public float jumpForce = 10f;
 
-    // [Header("Dash Settings")]                  //example of the dash 
-    // public float dashSpeed = 12f;
-    // public float dashCooldown = 0.5f;
-    // public bool allowAirDash = true;
+    [Header("Dash Settings")]                  //example of the dash 
+    public float dashSpeed = 12f;
+    public float dashDuration = 0.25f;
+    public float dashCooldown = 0.75f;
+    public bool allowAirDash = true;
 
     [Header("Ground Check (Raycast)")]
     public float groundCheckDistance = 0.1f;
@@ -56,10 +42,10 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
     private bool isGrounded;
     private bool wantJump;
     private float moveInput;
-    //private bool wantDash;
+    private bool wantDash;
 
     private int facing = 1; //facing right
-    //private float dashCooldownRemaining;
+    private float dashCooldownRemaining;
 
     private void Awake()
     {
@@ -76,10 +62,9 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         float horizontal = Input.GetAxisRaw("Horizontal");
         bool jumpDown = Input.GetKeyDown(KeyCode.Space);
 
-        //bool dashDown = Input.GetKeyDown(KeyCode.LeftShift);
+        bool dashDown = Input.GetKeyDown(KeyCode.LeftShift);
 
-        SetInput(horizontal, jumpDown);//here the other mechanics need to be implemented too...
-
+        SetInput(horizontal, jumpDown, dashDown);//here the other mechanics need to be implemented too...
     }
 
 
@@ -107,19 +92,12 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
             wantJump = false;
         }
 
-        // if (wanDash)
-        // {
-        //     Dash();
-        //     wantDash = false;
-        // }
-
-        // if (dashCooldownRemaining > 0f)
-        //     dashCooldownRemaining = Mathf.Max(0f, dashCooldownRemaining - dt);
+        DashTick(dt);
 
     }
 
 
-    public void SetInput(float horizontal, bool jumpDown) //here dash will need to be add the dashDown bool...
+    public void SetInput(float horizontal, bool jumpDown, bool dashDown) //here dash will need to be add the dashDown bool...
     {
 
         moveInput = Mathf.Clamp(horizontal, -1f, 1f);
@@ -130,8 +108,8 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         if (jumpDown && IsGrounded())
             wantJump = true;
 
-        // if (dashDown)
-        //     wantDash = true;
+        if (dashDown)
+            wantDash = true;
 
     }
 
@@ -141,7 +119,7 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         switch (action.type)
         {
             case MoveActionType.None:
-                SetInput(0f, false);  //need update this for each new mechanic...
+                SetInput(0f, false, false);  //need update this for each new mechanic...
                 break;
             case MoveActionType.Left:
                 MoveLeft();
@@ -150,7 +128,10 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
                 MoveRight();
                 break;
             case MoveActionType.Jump:
-                SetInput(moveInput, true); // need to be updated for each new mechanic too 
+                SetInput(moveInput, true, false);
+                break;
+            case MoveActionType.Dash:
+                SetInput(moveInput, false, true);
                 break;
                 //here need to be added the new mechanics.
 
@@ -171,42 +152,14 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         if (groundedNow)
             candidateActions.Add(new MoveAction(MoveActionType.Jump));
 
-        // bool canDash = dashCooldownRemaining <= 0f && (groundedNow || allowAirDash);
-        // if (canDash)
-        //     candidateActions.Add(new MoveAction(MoveActionType.Dash));
+        bool canDash = dashCooldownRemaining <= 0f && (groundedNow || allowAirDash);
+        if (canDash)
+            candidateActions.Add(new MoveAction(MoveActionType.Dash));
 
         return candidateActions;
 
     }
 
-    public MovementSnapshot CaptureSnapshot()
-    {
-        return new MovementSnapshot
-        {
-            position = transform.position,
-            velocity = rb.velocity,
-            moveInput = moveInput,
-            wantJump = wantJump,
-            //wantDash = wantDash,
-            isGrounded = isGrounded,
-            facing = facing,
-            //dashCooldownRemaining = dashCooldownRemaining
-        };
-    }
-
-    public void RestoreSnapshot(in MovementSnapshot s)
-    {
-        transform.position = s.position;
-        rb.velocity = s.velocity;
-
-        moveInput = s.moveInput;
-        wantJump = s.wantJump;
-        //wantDash = s.wantDash;
-
-        isGrounded = s.isGrounded;
-        facing = (s.facing == 0) ? 1 : s.facing;
-        //dashCooldownRemaining = s.dashCooldownRemaining;
-    }
 
     // ---------------- IMovement (runtime “capability” methods) ----------------
     public void Jump()
@@ -227,22 +180,32 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         facing = 1;
     }
 
-    // public void Dash()
-    // {
-    //     if (dashCooldownRemaining > 0f) return;
+    public void DashTick(float dt)
+    {
+        if (dashCooldownRemaining > 0f) {
+            dashCooldownRemaining = Mathf.Max(0f, dashCooldownRemaining - dt);
+        } 
 
-    //     bool groundedNow = IsGrounded();
-    //     if (!groundedNow && !allowAirDash) return;
+        if (dashCooldownRemaining + dashDuration >= dashCooldown)
+        {
+            rb.velocity = new Vector2(facing * dashSpeed, rb.velocity.y);
+        }
 
-    //     rb.velocity = new Vector2(facing * dashSpeed, rb.velocity.y);
-    //     dashCooldownRemaining = dashCooldown;
-    // }
+        bool groundedNow = IsGrounded();
+        if (!groundedNow && !allowAirDash) return;
+
+        if (wantDash && dashCooldownRemaining <= 0f)
+        {
+            dashCooldownRemaining = dashCooldown;
+            wantDash = false;
+        }
+    }
 
     public bool IsGrounded()
     {
         Vector2 origin = (Vector2)transform.position + rayOffset;
         RaycastHit2D hit = Physics2D.Raycast(origin, Vector2.down, groundCheckDistance, groundLayer);
-        isGrounded = (hit.collider != null);
+        isGrounded = hit.collider != null;
         return isGrounded;
     }
 
@@ -257,29 +220,40 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
     }
 
     private static List<IStateFeature> _cachedGameStateFeatures = new List<IStateFeature> {
+        // Position
         new StatePosVelFeature<float> {
             Type = PosVelType.PosX
         },
         new StatePosVelFeature<float> {
             Type = PosVelType.PosY
         },
+        // Velocity
         new StatePosVelFeature<float> {
             Type = PosVelType.VelX
         },
         new StatePosVelFeature<float> {
             Type = PosVelType.VelY
         },
+        // on ground
         new StateFeature<bool> {
             Type = FeatureType.Discrete,
+        },
+        // facing, move input, want jump/dash, dash cooldown - these differences do not distinguish two states.
+        new StateFeature<int> {
+            CustomEncoding = (ignored) => 0
         },
         new StateFeature<float> {
-            Type = FeatureType.Continuous,
-            RelevanceProvider = () => false
+            CustomEncoding = (ignored) => 0
         },
         new StateFeature<bool> {
-            Type = FeatureType.Discrete,
-            RelevanceProvider = () => false
+            CustomEncoding = (ignored) => 0
         },
+        new StateFeature<bool> {
+            CustomEncoding = (ignored) => 0
+        },
+        new StateFeature<float> {
+            CustomEncoding = (ignored) => 0
+        }
     };
     public static List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;
     public List<object> GetFeaturesRawValue() => new List<object> {
@@ -288,16 +262,22 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         rb.velocity.x,
         rb.velocity.y,
         isGrounded,
+        facing,
         moveInput,
-        wantJump
+        wantJump,
+        wantDash,
+        dashCooldownRemaining
     };
     public void RestoreFeaturesRawValue(List<object> rawValues)
     {
         transform.position = new Vector3((float)rawValues[0], (float)rawValues[1], transform.position.z);
         rb.velocity = new Vector2((float)rawValues[2], (float)rawValues[3]);
         isGrounded = (bool)rawValues[4];
-        moveInput = (float)rawValues[5];
-        wantJump = (bool)rawValues[6];
+        facing = (int)rawValues[5];
+        moveInput = (float)rawValues[6];
+        wantJump = (bool)rawValues[7];
+        wantDash = (bool)rawValues[8];
+        dashCooldownRemaining = (float)rawValues[9];
     }
 }
 
