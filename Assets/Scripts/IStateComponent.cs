@@ -24,7 +24,7 @@ public struct StateFeature<T> : IStateFeature
         }
         if (Type == FeatureType.Continuous)
         {
-            return Mathf.FloorToInt(0.5f + (float) rawValue / Granularity);
+            return Mathf.RoundToInt((float) rawValue / Granularity);
         }
         else
         {
@@ -65,7 +65,7 @@ public struct StatePosVelFeature<T> : IStateFeature
                 Granularity = settings.VelYGranularity;
                 break;
         }
-        return Mathf.FloorToInt(0.5f + Value / Granularity);
+        return Mathf.RoundToInt(Value / Granularity);
     }
 }
 

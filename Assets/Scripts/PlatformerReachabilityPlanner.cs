@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using Unity.VisualScripting;
 
 public class PlatformerReachabilityPlanner : MonoBehaviour
 {
@@ -20,33 +21,34 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
     [SerializeField] private int StepsPerAction = 3;
     [SerializeField] private float GoalReachRadiusTolerance = 0.5f;
     
-    [Header("Reachability & Heurisitical Cache Mesh Generation Settings")]
-    [SerializeField] private float PosMeshGranularity = 2.0f;
-    [SerializeField] private float PosMeshRadius = 0.5f;
-    [SerializeField] private int MaxExpansionsPerEpoch = 3;
-    [SerializeField] private float MeshSnappingHeuristicWeight = 3.5f;
-    
-    [Header("Reachability & Heurisitical Cache Mesh Display Settings")]
-    [SerializeField] private Gradient distanceGradient; // Set this in Inspector (Green to Red)
+    [Header("Reachability Display Settings")]
+    [SerializeField] private bool showClusteredHeatmap = true;
+    [SerializeField] private float HeatMapGranularity = 2.0f;
     [SerializeField] private float nodeSize = 0.15f;
+    [SerializeField] private Gradient distanceGradient;
     
-    // Mesh Data
-    private readonly Vector2Int[] Directions = new Vector2Int[]
+    // Mesh Statistics Tracking
+    private int cacheHits;
+    private int cacheMisses;
+    // State transition cache
+    private struct SimulationOutcome
     {
-        new Vector2Int(-1,  1), new Vector2Int(0,  1), new Vector2Int(1,  1),
-        new Vector2Int(-1,  0),                        new Vector2Int(1,  0),
-        new Vector2Int(-1, -1), new Vector2Int(0, -1), new Vector2Int(1, -1)
-    };
+        public GameStateSnapshot ResultState;
+        public Vector2 ResultPosition;
+    }
+    private readonly Dictionary<GameStateSnapshot, Dictionary<PlayerMovement.MoveAction, SimulationOutcome>> simulationCache = new Dictionary<GameStateSnapshot, Dictionary<PlayerMovement.MoveAction, SimulationOutcome>>();
+    // Mesh Data
     private Dictionary<GameStateSnapshot, int> GameStateToMeshNodeIdx = new Dictionary<GameStateSnapshot, int>();
     private Dictionary<int, Vector2> MeshNodeIdxToPosition = new Dictionary<int, Vector2>();
     private Dictionary<int, Dictionary<int, float>> MeshEdges = new Dictionary<int, Dictionary<int, float>>();
+    private Vector2 meshOrigin = Vector2.zero;
     private int nextGameStateIdx = 0;
-
-
-    // Visualization Data
-    private readonly List<Vector2> exploredPositions = new List<Vector2>();
-    private Dictionary<int, float> meshNodeDistances = new Dictionary<int, float>();
+    // Mesh Visualization Data
+    private Dictionary<Vector2, float> rawExploredStatesAndDists = new Dictionary<Vector2, float>();
+    private Dictionary<Vector2Int, float> clusteredExploredStates = new Dictionary<Vector2Int, float>();
     private float maxDistanceFound = 1f;
+
+    // Path finding Visualization Data
     private readonly List<Vector3> lastPathPoints = new List<Vector3>();
 
     // Node used for both search and mesh construction
@@ -97,39 +99,25 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
      *
      */
 
-    // Simulation cache for mesh generation
-    private struct SimulationOutcome
-    {
-        public GameStateSnapshot ResultState;
-        public Vector2 ResultPosition;
-        public float WeightedCost;
-    }
-    private readonly Dictionary<GameStateSnapshot, List<SimulationOutcome>> simulationCache 
-        = new Dictionary<GameStateSnapshot, List<SimulationOutcome>>();
-
+    // Entry point for mesh generation
     [ContextMenu("Run 8-Epoch Mesh Construction")]
     public void RunReachabilityMeshConstruction()
     {
-        // 1. Clear everything at the start of a full run
-        GameStateToMeshNodeIdx.Clear();
-        MeshNodeIdxToPosition.Clear();
-        MeshEdges.Clear();
-        exploredPositions.Clear();
-        simulationCache.Clear(); // Clear cache for a fresh run
-        meshNodeDistances.Clear();
-        nextGameStateIdx = 0;
+        // Reset Stats and Data
+        ResetMeshSearchData();
 
         PhysicsSimulator.BeginSimulation(stateManager);
         try
         {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+
             Queue<PathSearchNode> discoveryQueue = new Queue<PathSearchNode>();
-            
             PathSearchNode startNode = new PathSearchNode {
                 State = stateManager.CaptureState(),
-                Position = player.transform.position,
-                G = 0
+                Position = meshOrigin
             };
-            RecordMeshNode(startNode);
+            PathSearchNode newVisitNode;
+            RecordDiscoveredMeshNode(startNode);
             discoveryQueue.Enqueue(startNode);
 
             while (discoveryQueue.Count > 0)
@@ -137,89 +125,77 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
                 PathSearchNode currentNode = discoveryQueue.Dequeue();
                 int currentIdx = GameStateToMeshNodeIdx[currentNode.State];
 
-                foreach (Vector2Int dir in Directions)
+                foreach (var dynamicTransformation in GetStateDynamics(currentNode.State))
                 {
-                    Vector2 targetNeighborPos = currentNode.Position + (new Vector2(dir.x, dir.y) * PosMeshGranularity);
-                    
-                    AStarSearch.RunAStar(new AStarSearch.AStarConfig<PathSearchNode>
+                    var action = dynamicTransformation.Key;
+                    var simOutcome = dynamicTransformation.Value;
+                    // Not visited yet; by doing so we only push each state once.
+                    if (!GameStateToMeshNodeIdx.ContainsKey(simOutcome.ResultState))
                     {
-                        MaxExpansions = MaxExpansionsPerEpoch,
-                        StartingNodes = new List<PathSearchNode> { currentNode },
-                        // GetNeighbors now uses the cache!
-                        FutureStatesProvider = (curr) => GetNeighborsWithCache(curr, targetNeighborPos),
-                        NodeVisitHook = (visited) => 
-                        {
-                            exploredPositions.Add(visited.Position);
-                            if (IsInNeighborCell(visited.Position, targetNeighborPos))
-                            {
-                                if (!GameStateToMeshNodeIdx.ContainsKey(visited.State))
-                                {
-                                    RecordMeshNode(visited);
-                                    discoveryQueue.Enqueue(visited);
-                                }
-                                AddEdge(currentIdx, GameStateToMeshNodeIdx[visited.State], visited.G);
-                                return AStarSearch.AStarNodeVisitAction.Terminate;
-                            }
-                            return AStarSearch.AStarNodeVisitAction.Allow;
-                        }
-                    });
+                        newVisitNode = new PathSearchNode {
+                            State = simOutcome.ResultState,
+                            Position = simOutcome.ResultPosition
+                        };
+                        RecordDiscoveredMeshNode(newVisitNode);
+                        discoveryQueue.Enqueue(newVisitNode);
+                    }
+                    AddEdge(currentIdx, GameStateToMeshNodeIdx[simOutcome.ResultState], GetActionCost(action.type));
                 }
             }
+            // Update distances for final coloring & statistics
             CalculateShortestPathDistances();
+            // Print stats
+            watch.Stop();
+            var elapsedMs = watch.ElapsedMilliseconds;
+            PrintStatistics(elapsedMs);
         }
         finally { PhysicsSimulator.EndSimulation(stateManager); }
     }
 
-    private List<PathSearchNode> GetNeighborsWithCache(PathSearchNode current, Vector2 targetPos)
+    private void ResetMeshSearchData()
     {
-        if (!simulationCache.TryGetValue(current.State, out List<SimulationOutcome> outcomes))
+        GameStateToMeshNodeIdx.Clear();
+        MeshNodeIdxToPosition.Clear();
+        MeshEdges.Clear();
+        rawExploredStatesAndDists.Clear();
+        clusteredExploredStates.Clear();
+        cacheHits = 0;
+        cacheMisses = 0;
+        nextGameStateIdx = 0;
+        meshOrigin = player.transform.position;
+    }
+
+    private Dictionary<PlayerMovement.MoveAction, SimulationOutcome> GetStateDynamics(GameStateSnapshot state)
+    {
+        if (simulationCache.ContainsKey(state))
         {
-            outcomes = new List<SimulationOutcome>();
+            cacheHits++;
+        }
+        else
+        {
+            cacheMisses++;
+            Dictionary<PlayerMovement.MoveAction, SimulationOutcome> outcomes = new Dictionary<PlayerMovement.MoveAction, SimulationOutcome>();
             var actions = player.GetCandidateActions();
 
             foreach (var action in actions)
             {
-                PhysicsSimulator.SetGameState(stateManager, current.State);
-                Vector2 startPos = player.transform.position;
+                PhysicsSimulator.SetGameState(stateManager, state);
 
                 PhysicsSimulator.SimulatePlyAction(player, action, StepDt, StepsPerAction);
 
-                float distance = Vector2.Distance(startPos, player.transform.position);
-                
-                // Calculate cost based on action type
-                float multiplier = GetActionMultiplier(action.type);
-                float stepCost = distance * multiplier;
-
-                // Penalty for idling (optional): if player didn't move, give a flat time penalty
-                if (distance < 0.01f) stepCost = StepDt * StepsPerAction * idleMultiplier;
-
-                outcomes.Add(new SimulationOutcome
+                outcomes[action] = new SimulationOutcome
                 {
                     ResultState = stateManager.CaptureState(),
-                    ResultPosition = player.transform.position,
-                    WeightedCost = stepCost
-                });
+                    ResultPosition = player.transform.position
+                };
             }
-            simulationCache[current.State] = outcomes;
+            simulationCache[state] = outcomes;
         }
 
-        var neighborNodes = new List<PathSearchNode>(outcomes.Count);
-        foreach (var outcome in outcomes)
-        {
-            neighborNodes.Add(new PathSearchNode
-            {
-                State = outcome.ResultState,
-                Position = outcome.ResultPosition,
-                Parent = current,
-                // G now accumulates the weighted cost
-                G = current.G + outcome.WeightedCost,
-                H = Vector2.Distance(outcome.ResultPosition, targetPos) * MeshSnappingHeuristicWeight
-            });
-        }
-        return neighborNodes;
+        return simulationCache[state];
     }
 
-    private float GetActionMultiplier(PlayerMovement.MoveActionType type)
+    private float GetActionCost(PlayerMovement.MoveActionType type)
     {
         switch (type)
         {
@@ -236,20 +212,21 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
         }
     }
 
-    private bool IsInNeighborCell(Vector2 pos, Vector2 targetCenter)
+    private Vector2Int GetMeshDisplayCoordinate(Vector2 pos)
     {
-        return Mathf.Abs(pos.x - targetCenter.x) < PosMeshRadius && 
-               Math.Abs(pos.y - targetCenter.y) < PosMeshRadius;
+        return new Vector2Int(
+            Mathf.RoundToInt((pos.x - meshOrigin.x) / HeatMapGranularity),
+            Mathf.RoundToInt((pos.y - meshOrigin.y) / HeatMapGranularity)
+        );
     }
 
     private void AddEdge(int from, int to, float weight)
     {
         if (!MeshEdges.ContainsKey(from)) MeshEdges[from] = new Dictionary<int, float>();
-        if (!MeshEdges[from].ContainsKey(to) || weight < MeshEdges[from][to])
-            MeshEdges[from][to] = weight;
+        MeshEdges[from][to] = weight;
     }
 
-    private void RecordMeshNode(PathSearchNode node)
+    private void RecordDiscoveredMeshNode(PathSearchNode node)
     {
         if (!GameStateToMeshNodeIdx.ContainsKey(node.State))
         {
@@ -257,6 +234,17 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
             GameStateToMeshNodeIdx.Add(node.State, nextGameStateIdx);
             MeshNodeIdxToPosition.Add(nextGameStateIdx, node.Position);
         }
+    }
+
+    private void PrintStatistics(long elapsedMs)
+    {
+        double hitRate = (double)cacheHits / (cacheHits + cacheMisses) * 100;
+
+        Debug.Log($"<b>Reachability Mesh Stats:</b>\n" +
+                  $"- Time taken (ms): {elapsedMs}\n" +
+                  $"- Reached State Nodes: {rawExploredStatesAndDists.Count}\n" +
+                  $"- Cubes drawn configured by Mesh Granularity: {clusteredExploredStates.Count}\n" +
+                  $"- Cache Hit Rate: {hitRate:F2}% ({cacheHits} hits / {cacheMisses} misses)\n");
     }
 
     private struct DijkstraNode : IComparable<DijkstraNode>
@@ -278,10 +266,9 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
         int startNodeIdx = 1;
         
         // Initialize distances
-        meshNodeDistances.Clear();
-        foreach (var idx in MeshNodeIdxToPosition.Keys) 
+        Dictionary<int, float> meshNodeDistances = new Dictionary<int, float>();
+        foreach (var idx in GameStateToMeshNodeIdx.Values) 
             meshNodeDistances[idx] = float.MaxValue;
-        
         meshNodeDistances[startNodeIdx] = 0;
 
         // Use the PriorityQueue from AStarSearch
@@ -300,23 +287,37 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
             if (visited.Contains(u)) continue;
             visited.Add(u);
 
-            if (!MeshEdges.ContainsKey(u)) continue;
+            meshNodeDistances[u] = current.Distance;
+            if (current.Distance > maxDistanceFound)
+            {
+                maxDistanceFound = current.Distance;
+            }
 
+            if (!MeshEdges.ContainsKey(u)) continue;
             foreach (var edge in MeshEdges[u])
             {
                 int v = edge.Key;
-                float weight = edge.Value;
-                float newDist = meshNodeDistances[u] + weight;
+                float newDist = meshNodeDistances[u] + edge.Value;
 
-                if (newDist < meshNodeDistances[v])
-                {
-                    meshNodeDistances[v] = newDist;
-                    queue.Push(new DijkstraNode { NodeIdx = v, Distance = newDist });
-                    
-                    if (newDist > maxDistanceFound) maxDistanceFound = newDist;
-                }
+                queue.Push(new DijkstraNode { NodeIdx = v, Distance = newDist });
             }
         }
+        
+        // Transcribe Int index distances to vector2 distances for rendering
+        foreach (var item in meshNodeDistances)
+        {
+            var dst = item.Value;
+            // Individual point
+            var posVec = MeshNodeIdxToPosition[item.Key];
+            rawExploredStatesAndDists[posVec] = dst;
+            // Heatmap
+            var gridCoord = GetMeshDisplayCoordinate(posVec);
+            if (!clusteredExploredStates.ContainsKey(gridCoord) || clusteredExploredStates[gridCoord] > dst)
+            {
+                clusteredExploredStates[gridCoord] = dst;
+            }
+        }
+
     }
 
 
@@ -450,32 +451,31 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        if (MeshNodeIdxToPosition.Count > 0)
+        if (showClusteredHeatmap)
         {
-            foreach (var kvp in MeshNodeIdxToPosition)
+            foreach (var cell in clusteredExploredStates)
             {
-                int idx = kvp.Key;
-                Vector2 pos = kvp.Value;
-
-                if (meshNodeDistances.TryGetValue(idx, out float dist) && dist != float.MaxValue)
-                {
-                    // Normalize distance for the gradient (0.0 to 1.0)
-                    float t = Mathf.Clamp01(dist / maxDistanceFound);
-                    Gizmos.color = distanceGradient.Evaluate(t);
-                }
-                else
-                {
-                    // Unreachable nodes stay gray
-                    Gizmos.color = Color.gray;
-                }
-
-                Gizmos.DrawSphere(pos, nodeSize);
+                float t = Mathf.Clamp01(cell.Value / maxDistanceFound);
+                Gizmos.color = distanceGradient.Evaluate(t).WithAlpha(0.2f);
+                Vector3 worldPos = meshOrigin;
+                worldPos += new Vector3(cell.Key.x * HeatMapGranularity, cell.Key.y * HeatMapGranularity, 0);
+                // Draw a cube representing the "cell"
+                Gizmos.DrawCube(worldPos, Vector3.one * HeatMapGranularity * 0.9f);
+            }
+        }
+        else
+        {
+            foreach (var state in rawExploredStatesAndDists)
+            {
+                float t = Mathf.Clamp01(state.Value / maxDistanceFound);
+                Gizmos.color = distanceGradient.Evaluate(t).WithAlpha(0.2f);
+                Gizmos.DrawSphere(state.Key, nodeSize);
             }
         }
 
         // 4. Draw Goal Path
         if (lastPathPoints.Count >= 2) {
-            Gizmos.color = Color.green;
+            Gizmos.color = Color.green.WithAlpha(0.2f);
             for (int i = 0; i < lastPathPoints.Count - 1; i++)
                 Gizmos.DrawLine(lastPathPoints[i], lastPathPoints[i + 1]);
         }

@@ -26,9 +26,11 @@ public struct GameStateSnapshot
         
         // Hash based on Encoded values only for state comparison consistency
         int hash = 17;
+        int prime = 97;
+        int modulo = (int)1e9;
         foreach (var val in Data)
         {
-            unchecked { hash = hash * 31 + val.Encoded; }
+            hash = (hash * prime + val.Encoded) % modulo;
         }
         _cachedHash = hash;
     }

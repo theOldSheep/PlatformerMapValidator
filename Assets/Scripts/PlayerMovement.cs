@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.VisualScripting;
 using UnityEngine;
 
 
@@ -252,7 +253,7 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
             CustomEncoding = (ignored) => 0
         },
         new StateFeature<float> {
-            CustomEncoding = (ignored) => 0
+            CustomEncoding = (cooldown) => cooldown <= 0f ? 1 : 0
         }
     };
     public static List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;
