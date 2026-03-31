@@ -17,8 +17,6 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
 
     [Header("Search Settings")]
     [SerializeField] private int MaxExpansions = 5000;
-    [SerializeField] private float StepDt = 0.02f;
-    [SerializeField] private int StepsPerAction = 3;
     [SerializeField] private float GoalReachRadiusTolerance = 0.5f;
     
     [Header("Reachability Display Settings")]
@@ -95,12 +93,12 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
 
     /*
      *
-     *   Below: mesh construction
+     *   Below: reachability mesh construction
      *
      */
 
     // Entry point for mesh generation
-    [ContextMenu("Run 8-Epoch Mesh Construction")]
+    [ContextMenu("Run Reachability Mesh Construction")]
     public void RunReachabilityMeshConstruction()
     {
         // Reset Stats and Data
@@ -181,7 +179,7 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
             {
                 PhysicsSimulator.SetGameState(stateManager, state);
 
-                PhysicsSimulator.SimulatePlyAction(player, action, StepDt, StepsPerAction);
+                PhysicsSimulator.SimulatePlyAction(player, action);
 
                 outcomes[action] = new SimulationOutcome
                 {
@@ -286,6 +284,7 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
 
             if (visited.Contains(u)) continue;
             visited.Add(u);
+            if (current.Distance > 99999) continue; // Distance so large are considered infeasible
 
             meshNodeDistances[u] = current.Distance;
             if (current.Distance > maxDistanceFound)
@@ -364,7 +363,7 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
                 {
                     PhysicsSimulator.SetGameState(stateManager, current.State);
 
-                    PhysicsSimulator.SimulatePlyAction(player, action, StepDt, StepsPerAction);
+                    PhysicsSimulator.SimulatePlyAction(player, action);
 
                     // 5. Capture the resulting state
                     GameStateSnapshot nextState = stateManager.CaptureState();

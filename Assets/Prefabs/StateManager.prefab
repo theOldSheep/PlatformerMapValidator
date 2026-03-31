@@ -44,10 +44,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 96943a60744907d4db1e5ca329d4b564, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  MaxX: 55
+  MaxX: 65
   MinX: -10
-  MaxY: 15
+  MaxY: 25
   MinY: -15
   PosGranularity: 0.5
-  VelXGranularity: 3
-  VelYGranularity: 3
+  VelXGranularity: 6
+  VelYGranularity: 6

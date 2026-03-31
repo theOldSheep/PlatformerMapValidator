@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Tracing;
 using Unity.VisualScripting;
 using UnityEngine;
 
@@ -16,7 +17,32 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
     {
         public MoveActionType type;
         public MoveAction(MoveActionType type) => this.type = type;
-
+        public float simDeltaTime 
+        {
+            get
+            {
+                switch(type)
+                {
+                    case MoveActionType.Dash:
+                        return 0.025f;
+                    default:
+                        return 0.02f;
+                }
+            }
+        }
+        public int simIterations 
+        {
+            get
+            {
+                switch(type)
+                {
+                    case MoveActionType.Dash:
+                        return 30;
+                    default:
+                        return 5;
+                }
+            }
+        }
     }
 
 
