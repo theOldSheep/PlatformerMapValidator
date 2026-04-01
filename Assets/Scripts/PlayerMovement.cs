@@ -36,7 +36,7 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
                     case MoveActionType.Dash:
                         return 15;
                     case MoveActionType.None:
-                        return 4;
+                        return 6;
                     default:
                         return 6;
                 }
