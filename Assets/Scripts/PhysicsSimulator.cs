@@ -54,14 +54,14 @@ public class PhysicsSimulator : MonoBehaviour
         stateManager.RestoreState(gameState);
     }
 
-    public static List<SimulationOutcome> SimulatePlyAction(StateManager stateManager, PlayerMovement player, PlayerMovement.MoveAction action, bool recordFinalOutcomeOnly)
+    public static List<SimulationOutcome> SimulatePlyAction(StateManager stateManager, GameStateSnapshot initState, PlayerMovement player, PlayerMovement.MoveAction action, bool recordFinalOutcomeOnly)
     {
         if (! isInSim)
         {
             throw new Exception("Not yet in physics simulation. Can not simulate.");
         }
 
-        var initState = stateManager.CaptureState();
+        PhysicsSimulator.SetGameState(stateManager, initState);
         var lastVisitedState = initState;
         player.ApplyAction(action);
         

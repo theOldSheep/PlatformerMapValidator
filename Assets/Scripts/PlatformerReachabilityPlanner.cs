@@ -174,9 +174,7 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
 
             foreach (var action in actions)
             {
-                PhysicsSimulator.SetGameState(stateManager, state);
-
-                var outcomeList = PhysicsSimulator.SimulatePlyAction(stateManager, player, action, true);
+                var outcomeList = PhysicsSimulator.SimulatePlyAction(stateManager, state, player, action, true);
 
                 outcomes[action] = outcomeList[outcomeList.Count - 1];
             }
@@ -357,8 +355,7 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
 
                 foreach (var action in availableActions)
                 {
-                    PhysicsSimulator.SetGameState(stateManager, current.State);
-                    var actionOutcomes = PhysicsSimulator.SimulatePlyAction(stateManager, player, action, false);
+                    var actionOutcomes = PhysicsSimulator.SimulatePlyAction(stateManager, current.State, player, action, false);
                     var next = current; // Will be overridden.
 
                     foreach (var actionOutcomeStep in actionOutcomes)
