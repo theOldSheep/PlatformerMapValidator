@@ -1,7 +1,4 @@
-using System;
 using System.Collections.Generic;
-using System.Diagnostics.Tracing;
-using Unity.VisualScripting;
 using UnityEngine;
 
 
@@ -24,9 +21,9 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
                 switch(type)
                 {
                     case MoveActionType.Dash:
-                        return 0.025f;
+                        return 0.051f;
                     default:
-                        return 0.02f;
+                        return 0.041f;
                 }
             }
         }
@@ -37,9 +34,24 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
                 switch(type)
                 {
                     case MoveActionType.Dash:
-                        return 30;
+                        return 15;
+                    case MoveActionType.None:
+                        return 4;
                     default:
-                        return 5;
+                        return 6;
+                }
+            }
+        }
+        public bool simEarlyTermination 
+        {
+            get
+            {
+                switch(type)
+                {
+                    case MoveActionType.Dash:
+                        return false;
+                    default:
+                        return true;
                 }
             }
         }
@@ -246,7 +258,7 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         Gizmos.DrawLine(origin, origin + Vector2.down * groundCheckDistance);
     }
 
-    private static List<IStateFeature> _cachedGameStateFeatures = new List<IStateFeature> {
+    private List<IStateFeature> _cachedGameStateFeatures = new List<IStateFeature> {
         // Position
         new StatePosVelFeature<float> {
             Type = PosVelType.PosX
@@ -279,10 +291,13 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
             CustomEncoding = (ignored) => 0
         },
         new StateFeature<float> {
-            CustomEncoding = (cooldown) => cooldown <= 0f ? 1 : 0
+            CustomEncoding = (cooldown) => {
+                if (cooldown <= 0f) return 0; // ready to dash
+                return 2;
+            }
         }
     };
-    public static List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;
+    public List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;
     public List<object> GetFeaturesRawValue() => new List<object> {
         transform.position.x,
         transform.position.y,

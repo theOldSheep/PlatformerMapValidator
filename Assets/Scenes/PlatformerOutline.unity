@@ -771,7 +771,7 @@ MonoBehaviour:
   MaxExpansions: 50000
   GoalReachRadiusTolerance: 0.5
   showClusteredHeatmap: 1
-  HeatMapGranularity: 0.5
+  HeatMapGranularity: 1
   nodeSize: 0.15
   distanceGradient:
     serializedVersion: 2
@@ -4280,6 +4280,18 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 0}
     m_Modifications:
+    - target: {fileID: 1480072037960945501, guid: 3eda1ead5a5006d4fae88543842fd2dd, type: 3}
+      propertyPath: PosGranularity
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 1480072037960945501, guid: 3eda1ead5a5006d4fae88543842fd2dd, type: 3}
+      propertyPath: VelXGranularity
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 1480072037960945501, guid: 3eda1ead5a5006d4fae88543842fd2dd, type: 3}
+      propertyPath: VelYGranularity
+      value: 2
+      objectReference: {fileID: 0}
     - target: {fileID: 4531883192138835390, guid: 3eda1ead5a5006d4fae88543842fd2dd, type: 3}
       propertyPath: m_LocalPosition.x
       value: 93.02677

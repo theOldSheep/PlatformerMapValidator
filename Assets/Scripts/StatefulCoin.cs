@@ -21,7 +21,7 @@ public class StatefulCoin : MonoBehaviour, IStateComponent
             CustomEncoding = (ignored) => 0
         },
     };
-    public static List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;
+    public List<IStateFeature> GetFeatures() => _cachedGameStateFeatures;
     public List<object> GetFeaturesRawValue() => new List<object> {
         transform.position.x,
         transform.position.y,

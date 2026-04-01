@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using Unity.VisualScripting;
+using UnityEditor.Scripting;
+using Unity.Mathematics;
 
 public class PlatformerReachabilityPlanner : MonoBehaviour
 {
@@ -29,12 +31,7 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
     private int cacheHits;
     private int cacheMisses;
     // State transition cache
-    private struct SimulationOutcome
-    {
-        public GameStateSnapshot ResultState;
-        public Vector2 ResultPosition;
-    }
-    private readonly Dictionary<GameStateSnapshot, Dictionary<PlayerMovement.MoveAction, SimulationOutcome>> simulationCache = new Dictionary<GameStateSnapshot, Dictionary<PlayerMovement.MoveAction, SimulationOutcome>>();
+    private readonly Dictionary<GameStateSnapshot, Dictionary<PlayerMovement.MoveAction, PhysicsSimulator.SimulationOutcome>> simulationCache = new Dictionary<GameStateSnapshot, Dictionary<PlayerMovement.MoveAction, PhysicsSimulator.SimulationOutcome>>();
     // Mesh Data
     private Dictionary<GameStateSnapshot, int> GameStateToMeshNodeIdx = new Dictionary<GameStateSnapshot, int>();
     private Dictionary<int, Vector2> MeshNodeIdxToPosition = new Dictionary<int, Vector2>();
@@ -163,7 +160,7 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
         meshOrigin = player.transform.position;
     }
 
-    private Dictionary<PlayerMovement.MoveAction, SimulationOutcome> GetStateDynamics(GameStateSnapshot state)
+    private Dictionary<PlayerMovement.MoveAction, PhysicsSimulator.SimulationOutcome> GetStateDynamics(GameStateSnapshot state)
     {
         if (simulationCache.ContainsKey(state))
         {
@@ -172,20 +169,16 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
         else
         {
             cacheMisses++;
-            Dictionary<PlayerMovement.MoveAction, SimulationOutcome> outcomes = new Dictionary<PlayerMovement.MoveAction, SimulationOutcome>();
+            var outcomes = new Dictionary<PlayerMovement.MoveAction, PhysicsSimulator.SimulationOutcome>();
             var actions = player.GetCandidateActions();
 
             foreach (var action in actions)
             {
                 PhysicsSimulator.SetGameState(stateManager, state);
 
-                PhysicsSimulator.SimulatePlyAction(player, action);
+                var outcomeList = PhysicsSimulator.SimulatePlyAction(stateManager, player, action, true);
 
-                outcomes[action] = new SimulationOutcome
-                {
-                    ResultState = stateManager.CaptureState(),
-                    ResultPosition = player.transform.position
-                };
+                outcomes[action] = outcomeList[outcomeList.Count - 1];
             }
             simulationCache[state] = outcomes;
         }
@@ -221,7 +214,10 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
     private void AddEdge(int from, int to, float weight)
     {
         if (!MeshEdges.ContainsKey(from)) MeshEdges[from] = new Dictionary<int, float>();
-        MeshEdges[from][to] = weight;
+        if (!MeshEdges[from].ContainsKey(to) || MeshEdges[from][to] > weight)
+        {
+            MeshEdges[from][to] = weight;
+        }
     }
 
     private void RecordDiscoveredMeshNode(PathSearchNode node)
@@ -362,23 +358,25 @@ public class PlatformerReachabilityPlanner : MonoBehaviour
                 foreach (var action in availableActions)
                 {
                     PhysicsSimulator.SetGameState(stateManager, current.State);
+                    var actionOutcomes = PhysicsSimulator.SimulatePlyAction(stateManager, player, action, false);
+                    var next = current; // Will be overridden.
 
-                    PhysicsSimulator.SimulatePlyAction(player, action);
-
-                    // 5. Capture the resulting state
-                    GameStateSnapshot nextState = stateManager.CaptureState();
-                    Vector2 nextPos = player.transform.position;
-
-                    float newG = current.G + Vector2.Distance(current.Position, nextPos);
-                    float heuristicValue = PathSearchHeuristic(nextPos, goalPos, player);
-                    
-                    result.Add(new PathSearchNode {
-                        State = nextState,
-                        Position = nextPos,
-                        Parent = current,
-                        G = newG,
-                        H = heuristicWeight * heuristicValue
-                    });
+                    foreach (var actionOutcomeStep in actionOutcomes)
+                    {
+                        var nextState = actionOutcomeStep.ResultState;
+                        var nextPos = actionOutcomeStep.ResultPosition;
+                        float mhtDist = math.abs(current.Position.x - nextPos.x) + math.abs(current.Position.y - nextPos.y);
+                        float heuristicValue = PathSearchHeuristic(nextPos, goalPos, player);
+                        float newG = current.G + mhtDist + GetActionCost(action.type);
+                        next = new PathSearchNode {
+                            State = nextState,
+                            Position = nextPos,
+                            Parent = next,
+                            G = newG,
+                            H = heuristicWeight * heuristicValue
+                        };
+                    }
+                    result.Add(next);
                 }
                 return result;
             };

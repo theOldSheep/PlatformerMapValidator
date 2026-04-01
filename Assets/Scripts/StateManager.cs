@@ -52,7 +52,7 @@ public class StateManager : MonoBehaviour
         foreach (var provider in providers)
         {
             int typeId = StateTypeRegistry.GetTypeId(provider);
-            var stateFeatures = (List<IStateFeature>)provider.GetType().GetMethod("GetFeatures").Invoke(null, null);
+            var stateFeatures = provider.GetFeatures();
             var rawValues = provider.GetFeaturesRawValue();
 
             var pairs = new List<FeatureSnapshot>();
@@ -118,8 +118,7 @@ public class StateManager : MonoBehaviour
             if (StateTypeRegistry.GetTypeId(provider) == typeIdInSnapshot)
             {
                 // Get feature definitions to know how many fields to read
-                var features = (List<IStateFeature>)provider.GetType()
-                            .GetMethod("GetFeatures").Invoke(null, null);
+                var features = provider.GetFeatures();
 
                 List<object> rawValues = new List<object>();
                 for (int j = 0; j < features.Count; j++)

@@ -71,7 +71,7 @@ public struct StatePosVelFeature<T> : IStateFeature
 
 public interface IStateComponent
 {
-    static List<IStateFeature> GetFeatures() => throw new NotImplementedException();
+    List<IStateFeature> GetFeatures() => throw new NotImplementedException();
     List<object> GetFeaturesRawValue();
     void RestoreFeaturesRawValue(List<object> rawValues); 
 }
