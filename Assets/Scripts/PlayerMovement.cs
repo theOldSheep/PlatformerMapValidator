@@ -233,9 +233,14 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         bool groundedNow = IsGrounded();
         if (!groundedNow && !allowAirDash) return;
 
-        if (wantDash && dashCooldownRemaining <= 0f)
+        if (wantDash)
         {
-            dashCooldownRemaining = dashCooldown;
+            // Dash if cooldown is over
+            if (dashCooldownRemaining <= 0f)
+            {
+                dashCooldownRemaining = dashCooldown;
+            }
+            // Stop the attempt to dash whatsoever
             wantDash = false;
         }
     }
@@ -277,7 +282,7 @@ public class PlayerMovement : MonoBehaviour, IMovement, IStateComponent
         new StateFeature<bool> {
             Type = FeatureType.Discrete,
         },
-        // facing, move input, want jump/dash, dash cooldown - these differences do not distinguish two states.
+        // facing, move input, want jump/dash, dash cooldown.
         new StateFeature<int> {
             CustomEncoding = (ignored) => 0
         },
