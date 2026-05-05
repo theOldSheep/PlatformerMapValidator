@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Unity.VisualScripting.Dependencies.NCalc;
 using UnityEngine;
 
 public class PathCentroidWalker : MonoBehaviour
@@ -28,7 +29,9 @@ public class PathCentroidWalker : MonoBehaviour
     [SerializeField] private float reachTolerance = 0.6f;
     
     [Header("Generation Settings")]
-    [SerializeField] private int numRandomPaths = 3;
+    [SerializeField] private int numRandomPaths = 10;
+    [SerializeField] private float IntermPtCollisionRadius = 5f;
+    [SerializeField] private int numRandPointRetry = 100;
     [SerializeField] private Vector3 randomRangeMin = new Vector3(-5, -10, 0);
     [SerializeField] private Vector3 randomRangeMax = new Vector3(70, 5, 0);
 
@@ -43,6 +46,7 @@ public class PathCentroidWalker : MonoBehaviour
     [SerializeField] private float dashCost = 4.0f;
 
     private List<GeneratedPath> allGeneratedPaths = new List<GeneratedPath>();
+    private List<Vector2> allConsideredNodePos = new List<Vector2>();
     // Cache for physics simulations to speed up re-searching and refinement
     private readonly Dictionary<GameStateSnapshot, Dictionary<PlayerMovement.MoveAction, PhysicsSimulator.SimulationOutcome>> simulationCache = 
         new Dictionary<GameStateSnapshot, Dictionary<PlayerMovement.MoveAction, PhysicsSimulator.SimulationOutcome>>();
@@ -77,6 +81,7 @@ public class PathCentroidWalker : MonoBehaviour
         if (player == null || stateManager == null || finalTarget == null) return;
 
         allGeneratedPaths.Clear();
+        allConsideredNodePos.Clear();
 
         // 1. Straight-to-the-goal path
         GenerateSinglePath(finalTarget.position, finalTarget.position, Color.white, "Straight Path");
@@ -98,6 +103,9 @@ public class PathCentroidWalker : MonoBehaviour
     public void GenerateSinglePath(Vector3 midPoint, Vector3 target, Color color, string label)
     {
         if (player == null || stateManager == null) return;
+
+        // The mid (although might be cut off by the loop cutting) should be marked considered
+        allConsideredNodePos.Add(midPoint);
 
         PhysicsSimulator.BeginSimulation(stateManager);
         try
@@ -141,12 +149,18 @@ public class PathCentroidWalker : MonoBehaviour
                 currPos.y += (UnityEngine.Random.value - 0.5f) * 0.35f;
                 pathPos[i] = currPos;
             }
-            allGeneratedPaths.Add(new GeneratedPath {
+
+            var newPath = new GeneratedPath {
                 Nodes = pathNodes,
                 Positions = pathPos,
                 PathColor = color,
                 Label = label
-            });
+            };
+            allGeneratedPaths.Add(newPath);
+            foreach (var pt in newPath.Positions)
+            {
+                allConsideredNodePos.Add(pt);
+            }
             Debug.Log($"Path generated with {pathNodes.Count} nodes.");
         }
         finally
@@ -231,10 +245,25 @@ public class PathCentroidWalker : MonoBehaviour
 
     private Vector3 GetRandomMidpoint()
     {
-        Vector3 start = player.transform.position;
-        Vector3 end = finalTarget.position;
-        Vector3 center = (start + end) / 2f;
-        return center + new Vector3(UnityEngine.Random.Range(randomRangeMin.x, randomRangeMax.x), UnityEngine.Random.Range(randomRangeMin.y, randomRangeMax.y), 0);
+        Vector3 center = Vector2.zero;
+        for (int i = 0; i < numRandPointRetry; i ++) {
+            Vector3 start = player.transform.position;
+            Vector3 end = finalTarget.position;
+            center = (start + end) / 2f;
+            center += new Vector3(UnityEngine.Random.Range(randomRangeMin.x, randomRangeMax.x), UnityEngine.Random.Range(randomRangeMin.y, randomRangeMax.y), 0);
+            // Too close to existing points?
+            bool valid = true;
+            foreach (var existing in allConsideredNodePos)
+            {
+                if (Vector2.Distance(existing, center) < IntermPtCollisionRadius)
+                {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) break;
+        }
+        return center;
     }
 
     private List<PathNode> GetNeighbors(PathNode current, Vector3 targetPos, bool usePatience)
@@ -331,6 +360,11 @@ public class PathCentroidWalker : MonoBehaviour
                 Gizmos.DrawSphere(path.Positions[i], 0.05f);
             }
             Gizmos.DrawSphere(path.Positions.Last(), 0.25f);
+        }
+        foreach (var reachpt in allConsideredNodePos)
+        {
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawSphere(reachpt, 0.1f);
         }
     }
 }

@@ -1052,9 +1052,11 @@ MonoBehaviour:
   maxExpansions: 15000
   patience: 100
   reachTolerance: 0.6
-  numRandomPaths: 3
+  numRandomPaths: 50
+  IntermPtCollisionRadius: 5
+  numRandPointRetry: 100
   randomRangeMin: {x: -5, y: -10, z: 0}
-  randomRangeMax: {x: 70, y: 5, z: 0}
+  randomRangeMax: {x: 70, y: 10, z: 0}
   enableRefinement: 1
   loopDetectionRadius: 2
   maxRefinementPasses: 3
@@ -4583,11 +4585,11 @@ PrefabInstance:
     m_Modifications:
     - target: {fileID: 4443997981489070855, guid: bf17afa443ce42846a048cb8b04c5b48, type: 3}
       propertyPath: m_LocalPosition.x
-      value: 0.6
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 4443997981489070855, guid: bf17afa443ce42846a048cb8b04c5b48, type: 3}
       propertyPath: m_LocalPosition.y
-      value: -0
+      value: -0.4
       objectReference: {fileID: 0}
     - target: {fileID: 4443997981489070855, guid: bf17afa443ce42846a048cb8b04c5b48, type: 3}
       propertyPath: m_LocalPosition.z
